@@ -20,3 +20,14 @@ build/
 
 # Claude ローカル設定
 .claude/settings.local.json
+
+# 環境変数の例はコミットする
+!.env.example
+
+# Next.js・TypeScript・テストの生成物
+/out/
+/coverage
+next-env.d.ts
+*.tsbuildinfo
+.vercel
+.pnpm-debug.log*

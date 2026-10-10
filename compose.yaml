@@ -1,0 +1,25 @@
+# ローカル開発・テスト用の PostgreSQL（本番では使わない）
+services:
+  db:
+    image: postgres:17
+    container_name: stockflow-next-db
+    environment:
+      POSTGRES_USER: stockflow
+      POSTGRES_PASSWORD: stockflow
+      POSTGRES_DB: stockflow
+      TZ: Asia/Tokyo
+    ports:
+      # 他プロジェクトの 5432 と衝突しないようホスト側は 54329
+      - "54329:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # 初回起動時（ボリュームが空のとき）だけ実行される
+      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stockflow -d stockflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  db-data:
