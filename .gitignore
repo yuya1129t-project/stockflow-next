@@ -1,0 +1,22 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# 依存・ビルド生成物
+node_modules/
+dist/
+build/
+.next/
+*.log
+
+# 機密（コミット禁止）
+.env
+.env.*
+*.pem
+*.p12
+*.key
+*credentials*
+*secrets*
+
+# Claude ローカル設定
+.claude/settings.local.json
