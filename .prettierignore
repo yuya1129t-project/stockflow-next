@@ -3,6 +3,8 @@ node_modules/
 pnpm-lock.yaml
 next-env.d.ts
 coverage/
+src/generated/
+prisma/migrations/
 # 既存ドキュメント・自動生成ファイルは整形しない
 CLAUDE.md
 AGENTS.md

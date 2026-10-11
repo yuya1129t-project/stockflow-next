@@ -1,0 +1,326 @@
+// StockFlow の DB スキーマ。業務仕様は docs/spec.md §3・§4
+// - 金額・数量は円／個数の整数（Int）
+// - 表名は snake_case（@@map）、列名は camelCase（Better Auth の生成スキーマに合わせる）
+// - DB 側で守れる値の範囲（数量 > 0、価格 ≥ 0 など）は migration.sql の CHECK 制約で保証する
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// 認証（Better Auth 1.7 のコアスキーマ。`auth generate`（better-auth CLI 1.7.7）の出力に
+// role / isActive を追加したもの。#3 で Prisma アダプターから使う）
+// ---------------------------------------------------------------------------
+
+enum Role {
+  admin
+  staff
+  viewer
+}
+
+model User {
+  id            String    @id
+  name          String
+  email         String
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  role          Role      @default(viewer)
+  isActive      Boolean   @default(true)
+  sessions      Session[]
+  accounts      Account[]
+
+  apiTokens      ApiToken[]
+  stockMovements StockMovement[]
+  auditLogs      AuditLog[]
+
+  @@unique([email])
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([token])
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+/// 外部向け REST API のトークン（spec §6-2）。平文は発行時に1回だけ表示し、DB にはハッシュのみ保存
+model ApiToken {
+  id         Int       @id @default(autoincrement())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  tokenHash  String    @unique
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@map("api_token")
+}
+
+// ---------------------------------------------------------------------------
+// マスタ
+// ---------------------------------------------------------------------------
+
+/// 商品。価格・発注点は 0 以上の整数（CHECK 制約）。無効化は isActive = false（論理削除）
+model Product {
+  id            Int      @id @default(autoincrement())
+  code          String   @unique // 例 P-0001
+  name          String
+  category      String
+  unit          String // 個／箱／kg など
+  salesPrice    Int
+  purchasePrice Int
+  reorderPoint  Int
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  salesOrderLines    SalesOrderLine[]
+  purchaseOrderLines PurchaseOrderLine[]
+  stockMovements     StockMovement[]
+
+  @@index([name])
+  @@index([category])
+  @@map("product")
+}
+
+enum PartnerKind {
+  customer
+  supplier
+  both
+}
+
+/// 取引先。郵便番号はハイフンなし7桁で保存（CHECK 制約）
+model Partner {
+  id         Int         @id @default(autoincrement())
+  code       String      @unique // 例 C-0001／S-0001
+  name       String
+  kind       PartnerKind
+  postalCode String?
+  address    String?
+  phone      String?
+  email      String?
+  isActive   Boolean     @default(true)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  salesOrders    SalesOrder[]
+  purchaseOrders PurchaseOrder[]
+
+  @@index([name])
+  @@index([kind, isActive])
+  @@map("partner")
+}
+
+// ---------------------------------------------------------------------------
+// 受注・発注
+// ---------------------------------------------------------------------------
+
+/// 受注ステータス（spec §4）: draft → confirmed → shipped、draft／confirmed → cancelled
+enum SalesOrderStatus {
+  draft
+  confirmed
+  shipped
+  cancelled
+}
+
+model SalesOrder {
+  id         Int              @id @default(autoincrement())
+  number     String           @unique // SO-YYYYMMDD-NNN
+  customerId Int
+  customer   Partner          @relation(fields: [customerId], references: [id])
+  orderDate  DateTime         @db.Date
+  dueDate    DateTime?        @db.Date
+  status     SalesOrderStatus @default(draft)
+  note       String?
+  subtotal   Int              @default(0)
+  tax        Int              @default(0)
+  total      Int              @default(0)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  lines SalesOrderLine[]
+
+  @@index([customerId])
+  @@index([status, orderDate])
+  @@index([orderDate])
+  @@map("sales_order")
+}
+
+/// 受注明細。単価は受注時点の値を保存する（商品マスタ変更の影響を受けない）
+model SalesOrderLine {
+  id           Int        @id @default(autoincrement())
+  salesOrderId Int
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  productId    Int
+  product      Product    @relation(fields: [productId], references: [id])
+  quantity     Int
+  unitPrice    Int
+
+  @@index([salesOrderId])
+  @@index([productId])
+  @@map("sales_order_line")
+}
+
+/// 発注ステータス（spec §4）: draft → ordered → received、draft／ordered → cancelled
+enum PurchaseOrderStatus {
+  draft
+  ordered
+  received
+  cancelled
+}
+
+model PurchaseOrder {
+  id           Int                 @id @default(autoincrement())
+  number       String              @unique // PO-YYYYMMDD-NNN
+  supplierId   Int
+  supplier     Partner             @relation(fields: [supplierId], references: [id])
+  orderDate    DateTime            @db.Date
+  expectedDate DateTime?           @db.Date
+  status       PurchaseOrderStatus @default(draft)
+  note         String?
+  subtotal     Int                 @default(0)
+  tax          Int                 @default(0)
+  total        Int                 @default(0)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  lines PurchaseOrderLine[]
+
+  @@index([supplierId])
+  @@index([status, orderDate])
+  @@index([orderDate])
+  @@map("purchase_order")
+}
+
+model PurchaseOrderLine {
+  id              Int           @id @default(autoincrement())
+  purchaseOrderId Int
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  productId       Int
+  product         Product       @relation(fields: [productId], references: [id])
+  quantity        Int
+  unitPrice       Int
+
+  @@index([purchaseOrderId])
+  @@index([productId])
+  @@map("purchase_order_line")
+}
+
+/// 伝票番号の採番（SO-YYYYMMDD-NNN／PO-YYYYMMDD-NNN の NNN）。kind＋date ごとに最後の番号を持つ
+enum DocumentKind {
+  SO
+  PO
+}
+
+model DocumentSequence {
+  kind       DocumentKind
+  date       DateTime     @db.Date
+  lastNumber Int          @default(0)
+
+  @@id([kind, date])
+  @@map("document_sequence")
+}
+
+// ---------------------------------------------------------------------------
+// 在庫・操作履歴
+// ---------------------------------------------------------------------------
+
+enum StockMovementType {
+  in
+  out
+  adjust
+}
+
+/// 入出庫の発生元（refType＋refId で伝票を指す。棚卸調整は null）
+enum StockRefType {
+  sales_order
+  purchase_order
+}
+
+/// 入出庫履歴。現在庫 = quantity（符号付き）の合計。履歴は更新・削除しない
+model StockMovement {
+  id        Int               @id @default(autoincrement())
+  productId Int
+  product   Product           @relation(fields: [productId], references: [id])
+  type      StockMovementType
+  quantity  Int // in は正、out は負、adjust は 0 以外（CHECK 制約）
+  reason    String?
+  refType   StockRefType?
+  refId     Int?
+  userId    String?
+  user      User?             @relation(fields: [userId], references: [id])
+  createdAt DateTime          @default(now())
+
+  @@index([productId, createdAt])
+  @@index([refType, refId])
+  @@index([createdAt])
+  @@map("stock_movement")
+}
+
+/// 操作履歴（登録・更新・ステータス変更・ログインなど）
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  targetType String?
+  targetId   String?
+  summary    String
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([targetType, targetId])
+  @@map("audit_log")
+}
