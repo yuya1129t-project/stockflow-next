@@ -299,7 +299,8 @@ model StockMovement {
   refType   StockRefType?
   refId     Int?
   userId    String?
-  user      User?             @relation(fields: [userId], references: [id])
+  // 履歴を残すため、ユーザーは物理削除せず無効化する（参照があれば削除できない）
+  user      User?             @relation(fields: [userId], references: [id], onDelete: Restrict)
   createdAt DateTime          @default(now())
 
   @@index([productId, createdAt])
@@ -312,7 +313,7 @@ model StockMovement {
 model AuditLog {
   id         Int      @id @default(autoincrement())
   userId     String?
-  user       User?    @relation(fields: [userId], references: [id])
+  user       User?    @relation(fields: [userId], references: [id], onDelete: Restrict)
   action     String
   targetType String?
   targetId   String?
