@@ -92,6 +92,17 @@ model Verification {
   @@map("verification")
 }
 
+/// ログイン試行などの回数制限（Better Auth の rateLimit、storage: "database"）。
+/// 複数インスタンス（Vercel など）でもカウンターを共有するため DB に置く。key は「IP|パス」
+model RateLimit {
+  id          String @id
+  key         String @unique
+  count       Int
+  lastRequest BigInt
+
+  @@map("rate_limit")
+}
+
 /// 外部向け REST API のトークン（spec §6-2）。平文は発行時に1回だけ表示し、DB にはハッシュのみ保存
 model ApiToken {
   id         Int       @id @default(autoincrement())

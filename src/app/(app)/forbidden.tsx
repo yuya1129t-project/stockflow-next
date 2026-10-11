@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { requireUser } from "@/lib/auth/guards";
-
 export const metadata: Metadata = { title: "403 権限がありません | StockFlow" };
 
-/** 権限外の画面を開いたときの表示（requirePermission からリダイレクトされる） */
-export default async function ForbiddenPage() {
-  await requireUser();
+/**
+ * 権限外の画面を開いたときの表示（requirePermission の forbidden() で HTTP 403 とともに描画される）。
+ * ログイン後の共通レイアウト（(app)/layout.tsx）の中に表示される
+ */
+export default function Forbidden() {
   return (
     <div className="mx-auto max-w-md space-y-3 py-10 text-center">
       <p className="text-sm font-medium text-muted-foreground">403</p>

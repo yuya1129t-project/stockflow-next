@@ -72,7 +72,7 @@ DB を作り直したいときは `docker compose down -v` でボリュームご
 | -------------------- | ------------------------------------------------------------------------------------------------ |
 | `pnpm db:migrate`    | スキーマ変更からマイグレーションを作成して開発用 DB に適用（`prisma migrate dev`）               |
 | `pnpm db:reset`      | 接続先を確認してから開発用 DB を作り直し、シードを投入（**開発用 DB のデータはすべて消えます**） |
-| `pnpm db:seed`       | シードだけを投入し直す（このアプリの 14 テーブルを空にしてから投入。他のテーブルには触れません） |
+| `pnpm db:seed`       | シードだけを投入し直す（このアプリの 15 テーブルを空にしてから投入。他のテーブルには触れません） |
 | `pnpm db:test:reset` | テスト用 DB（`DATABASE_URL_TEST`）にマイグレーションを適用してシードを投入                       |
 | `pnpm db:generate`   | Prisma Client を生成（`pnpm install` 時にも自動で実行）                                          |
 
@@ -249,9 +249,12 @@ erDiagram
   - 無効ユーザー（`isActive = false`）はログインできません。ログイン中に無効化された場合も、セッションを取得するたびに DB の `isActive` を確認するので、次のリクエストから未ログインとして扱い、そのセッションを削除します（Cookie へのセッションのキャッシュは使っていません）
   - ログインは操作履歴（`audit_log`、action = `login`）に記録します
   - HTTP で公開する Better Auth のエンドポイントは `/api/auth/sign-in/email`・`/api/auth/sign-out`・`/api/auth/get-session` だけです（それ以外は 404）
+  - **ログインの試行回数制限:** ログイン画面は HTTP の `/api/auth/sign-in/email` を経由します（Better Auth の制限は HTTP の経路にだけ効くため）。同じ IP から 60 秒に 5 回まで、超えると 429（画面には「試行回数が多すぎます…」と表示）。カウンターは Vercel の複数インスタンスでも共有できるよう DB（`rate_limit` テーブル）に置き、IP は Vercel が上書きする `x-forwarded-for` から取ります。制限は本番・開発で有効、自動テストでは既定で無効です（制限のテストでは有効にして検証）
 - **権限:** ロール × 操作の対応表を `src/lib/auth/permissions.ts` の **1 か所**にまとめ、`can(role, action)` で判定します。表が docs/spec.md §2 と一致することは単体テストで spec の表を読み込んで確認しています
 - **検査はサーバー側:** メニューの出し分けは表示の補助で、権限は必ずサーバー側のガード関数（`src/lib/auth/guards.ts`）で検査します
-  - 画面・Server Action: `requireUser()`／`requirePermission(action)`。未ログインはログイン画面へ（ログイン後に元の画面へ戻ります）、権限外は 403 ページ（`/forbidden`）へリダイレクトします
+  - 画面: `requireUser()`／`requirePermission(action)`。未ログインはログイン画面へ（ログイン後に元の画面へ戻ります）、権限外は `forbidden()` で HTTP 403 を返し、403 の画面（`src/app/(app)/forbidden.tsx`）を表示します
+    - `forbidden()` を使うため、`next.config.ts` で実験的な設定 `experimental.authInterrupts` を有効にしています（Next.js 16 で画面から HTTP 403 を返す手段がこれしかないため）
+  - Server Action: `checkActionPermission(action)`。画面遷移はせず `{ ok: false, error }` を返すので、フォームの入力内容を消さずにエラーを表示できます
   - Route Handler: `requireApiPermission(request, action)`。未ログインは 401、権限外は 403 を JSON で返します
   - `src/proxy.ts`（Next.js 16 で Middleware から改名された Proxy）は、セッション Cookie が無いときにログイン画面へ送る楽観的なチェックだけを行います
 

@@ -44,11 +44,16 @@ export function authorize(
   return { ok: true, user };
 }
 
+/** 未ログイン（401）・権限外（403）のメッセージ */
+export function authErrorMessage(status: 401 | 403): string {
+  return status === 401
+    ? "ログインが必要です"
+    : "この操作を行う権限がありません";
+}
+
 /** API 用のエラー応答（JSON） */
 export function authErrorResponse(status: 401 | 403): Response {
-  const message =
-    status === 401 ? "ログインが必要です" : "この操作を行う権限がありません";
-  return Response.json({ error: message }, { status });
+  return Response.json({ error: authErrorMessage(status) }, { status });
 }
 
 /**
@@ -81,10 +86,21 @@ export function safeCallbackPath(value: unknown): string {
   return value;
 }
 
-/** ログインの失敗（Better Auth の APIError）を、画面に出す日本語のメッセージにする */
+/**
+ * ログインの失敗を、画面に出す日本語のメッセージにする。
+ * Better Auth のクライアントのエラー（{ status, code }）とサーバーの APIError（{ statusCode, body.code }）の両方を受け付ける
+ */
 export function loginErrorMessage(error: unknown): string {
-  const code = (error as { body?: { code?: unknown } } | null)?.body?.code;
-  switch (code) {
+  const e = (error ?? {}) as {
+    status?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+    body?: { code?: unknown };
+  };
+  if (e.status === 429 || e.statusCode === 429) {
+    return "試行回数が多すぎます。しばらく待ってからもう一度お試しください";
+  }
+  switch (e.body?.code ?? e.code) {
     case "INVALID_EMAIL_OR_PASSWORD":
     case "INVALID_EMAIL":
       return "メールアドレスまたはパスワードが正しくありません";

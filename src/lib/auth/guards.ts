@@ -1,22 +1,27 @@
 /**
  * サーバー側のガード関数（Server Components・Server Actions・Route Handlers から使う）。
  *
- * 画面（Server Components・Server Actions）:
+ * 画面（Server Components）:
  *   - requireUser(): 未ログインならログイン画面へ（ログイン後に元の画面へ戻る）
- *   - requirePermission(action): 上に加えて、権限外なら 403 ページへ
+ *   - requirePermission(action): 上に加えて、権限外なら forbidden()（HTTP 403 と forbidden.tsx の表示）
+ * Server Actions:
+ *   - checkActionPermission(action): redirect も forbidden もせず { ok: false, error } を返す
+ *     （フォームの入力内容を消さずにエラーを表示できる）
  * API（Route Handlers）:
  *   - requireApiPermission(request, action): 未ログインは 401、権限外は 403 の JSON 応答を返す
  *
  * 権限の定義は src/lib/auth/permissions.ts の 1 か所だけ
  */
 import { headers } from "next/headers";
-import { redirect } from "next/navigation";
+import { forbidden, redirect } from "next/navigation";
 import { cache } from "react";
 
 import { getAuth } from "./auth";
 import { PATHNAME_HEADER } from "./constants";
 import { can, type Action } from "./permissions";
 import {
+  authErrorMessage,
+  authorize,
   authorizeRequest,
   getSessionUser,
   safeCallbackPath,
@@ -45,11 +50,29 @@ export async function requireUser(): Promise<SessionUser> {
   return user;
 }
 
-/** 画面用: 権限を必須にする（権限外は 403 ページへ） */
+/** 画面用: 権限を必須にする（権限外は HTTP 403。表示は src/app/(app)/forbidden.tsx） */
 export async function requirePermission(action: Action): Promise<SessionUser> {
   const user = await requireUser();
-  if (!can(user.role, action)) redirect("/forbidden");
+  if (!can(user.role, action)) forbidden();
   return user;
+}
+
+export type ActionPermissionResult =
+  { ok: true; user: SessionUser } | { ok: false; error: string };
+
+/**
+ * Server Action 用: 権限を確認して結果を返す（画面遷移はしない）。
+ *
+ * @example
+ * const check = await checkActionPermission("order:edit");
+ * if (!check.ok) return { error: check.error };
+ */
+export async function checkActionPermission(
+  action: Action,
+): Promise<ActionPermissionResult> {
+  const result = authorize(await getCurrentUser(), action);
+  if (result.ok) return result;
+  return { ok: false, error: authErrorMessage(result.status) };
 }
 
 /**

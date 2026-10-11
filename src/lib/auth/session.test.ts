@@ -45,6 +45,20 @@ describe("loginErrorMessage", () => {
     );
   });
 
+  it("試行回数の上限（429）", () => {
+    const message =
+      "試行回数が多すぎます。しばらく待ってからもう一度お試しください";
+    // Better Auth のクライアントのエラー（status）とサーバーの APIError（statusCode）
+    expect(loginErrorMessage({ status: 429, code: undefined })).toBe(message);
+    expect(loginErrorMessage({ statusCode: 429 })).toBe(message);
+  });
+
+  it("クライアントのエラー（code が直下にある形）も変換する", () => {
+    expect(
+      loginErrorMessage({ status: 401, code: "INVALID_EMAIL_OR_PASSWORD" }),
+    ).toBe("メールアドレスまたはパスワードが正しくありません");
+  });
+
   it("無効ユーザー", () => {
     expect(loginErrorMessage(apiError(USER_INACTIVE_CODE))).toBe(
       "このアカウントは無効になっています。管理者に連絡してください",

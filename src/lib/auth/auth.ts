@@ -8,6 +8,8 @@
  *   isActive を確認し、無効ならセッションを削除して「未ログイン」として返す
  *   （cookieCache は使わないので、セッション取得のたびに DB から user を読み直す）
  * - ログインは操作履歴（AuditLog）に記録する（spec §3）
+ * - ログインの試行回数を制限する（rateLimit。HTTP の /api/auth/* だけに効くので、画面のログインも
+ *   HTTP の /api/auth/sign-in/email を経由する）。カウンターは複数インスタンスで共有できるよう DB に置く
  */
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
@@ -21,13 +23,42 @@ import { getPrisma } from "@/lib/db";
 import { USER_INACTIVE_CODE } from "./constants";
 import { ROLES } from "./permissions";
 
-export function createAuth(prisma: PrismaClient) {
+/** ログインの試行回数の上限（同じ IP から 60 秒に 5 回まで） */
+export const SIGN_IN_RATE_LIMIT = { window: 60, max: 5 } as const;
+
+/** テストで設定の一部を切り替えるためのオプション（アプリからは指定しない） */
+export interface CreateAuthOptions {
+  /** 試行回数の制限。既定はテスト（NODE_ENV=test）以外で有効。本番では常に有効 */
+  rateLimit?: boolean;
+  /** サインアップを有効にする（input: false の確認用。アプリでは常に無効） */
+  enableSignUp?: boolean;
+}
+
+export function createAuth(
+  prisma: PrismaClient,
+  options: CreateAuthOptions = {},
+) {
+  const isProduction = process.env.NODE_ENV === "production";
   return betterAuth({
     // secret / baseURL は環境変数 BETTER_AUTH_SECRET / BETTER_AUTH_URL から読む
     database: prismaAdapter(prisma, { provider: "postgresql" }),
     emailAndPassword: {
       enabled: true,
-      disableSignUp: true,
+      disableSignUp: !options.enableSignUp,
+    },
+    rateLimit: {
+      enabled:
+        isProduction || (options.rateLimit ?? process.env.NODE_ENV !== "test"),
+      // Vercel の複数インスタンスでも共有できるよう DB（rate_limit テーブル）に置く
+      storage: "database",
+      customRules: { "/sign-in/email": SIGN_IN_RATE_LIMIT },
+    },
+    advanced: {
+      ipAddress: {
+        // Vercel は x-forwarded-for をクライアントの IP で上書きする（外部から送られた値は転送しない）。
+        // Vercel 以外のプロキシの背後で動かす場合は、そのプロキシに合わせて見直す
+        ipAddressHeaders: ["x-forwarded-for"],
+      },
     },
     session: {
       // セッション取得のたびに DB の user（isActive）を確認するため、Cookie へのキャッシュは使わない

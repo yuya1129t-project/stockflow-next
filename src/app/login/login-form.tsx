@@ -1,10 +1,11 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useState, type FormEvent } from "react";
 
 import { Button } from "@/components/ui/button";
-import { login, type LoginState } from "@/lib/auth/actions";
+import { authClient } from "@/lib/auth/client";
 import { ROLE_LABELS, type Role } from "@/lib/auth/permissions";
+import { loginErrorMessage } from "@/lib/auth/session";
 
 interface DemoAccount {
   email: string;
@@ -24,20 +25,47 @@ export function LoginForm({
   demoAccounts: DemoAccount[];
   demoPassword: string;
 }) {
-  const [state, formAction, pending] = useActionState<LoginState, FormData>(
-    login,
-    {},
-  );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
+
+  // HTTP の /api/auth/sign-in/email を経由する（Better Auth の試行回数制限が効く）
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) {
+      setError("メールアドレスとパスワードを入力してください");
+      return;
+    }
+    setPending(true);
+    setError(undefined);
+    try {
+      const result = await authClient.signIn.email({
+        email: trimmedEmail,
+        password,
+      });
+      if (result.error) {
+        setError(loginErrorMessage(result.error));
+        setPending(false);
+        return;
+      }
+    } catch (e) {
+      setError(loginErrorMessage(e));
+      setPending(false);
+      return;
+    }
+    // callbackUrl はサーバー側（page.tsx の safeCallbackPath）で検査済みのサイト内パス。
+    // 画面全体を読み込み直して、新しいセッション Cookie でサーバー側の描画をやり直す
+    window.location.assign(callbackUrl);
+  }
 
   return (
     <div className="space-y-6">
       <form
-        action={formAction}
+        onSubmit={handleSubmit}
         className="space-y-4 rounded-xl border bg-card p-5 shadow-xs"
       >
-        <input type="hidden" name="callbackUrl" value={callbackUrl} />
         <div className="space-y-1.5">
           <label htmlFor="email" className="text-sm font-medium">
             メールアドレス
@@ -50,7 +78,7 @@ export function LoginForm({
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            aria-invalid={state.error ? true : undefined}
+            aria-invalid={error ? true : undefined}
             className={inputClass}
           />
         </div>
@@ -66,13 +94,13 @@ export function LoginForm({
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            aria-invalid={state.error ? true : undefined}
+            aria-invalid={error ? true : undefined}
             className={inputClass}
           />
         </div>
-        {state.error && (
+        {error && (
           <p role="alert" className="text-sm text-destructive">
-            {state.error}
+            {error}
           </p>
         )}
         <Button type="submit" size="lg" className="w-full" disabled={pending}>

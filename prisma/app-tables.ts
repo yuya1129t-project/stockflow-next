@@ -11,6 +11,7 @@ export const APP_TABLES = [
   "session",
   "account",
   "verification",
+  "rate_limit",
   "document_sequence",
   "sales_order",
   "purchase_order",

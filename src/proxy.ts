@@ -29,5 +29,5 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   // API（認証は各 Route Handler で検査）と静的ファイルは対象外
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!api/|_next/static|_next/image|favicon.ico).*)"],
 };
