@@ -35,6 +35,9 @@ jobs:
 
     env:
       DATABASE_URL_TEST: postgresql://stockflow:stockflow@localhost:5432/stockflow_test?schema=public
+      # 認証（Better Auth）の CI 専用ダミー値
+      BETTER_AUTH_SECRET: ci-dummy-secret-not-for-production-0123456789
+      BETTER_AUTH_URL: http://localhost:3000
 
     steps:
       - uses: actions/checkout@v7
