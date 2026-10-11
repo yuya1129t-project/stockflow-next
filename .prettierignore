@@ -1,0 +1,9 @@
+.next/
+node_modules/
+pnpm-lock.yaml
+next-env.d.ts
+coverage/
+# 既存ドキュメント・自動生成ファイルは整形しない
+CLAUDE.md
+AGENTS.md
+docs/
