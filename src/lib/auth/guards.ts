@@ -24,9 +24,11 @@ import {
 } from "./session";
 
 /** ログイン中のユーザー（未ログイン・無効ユーザーは null）。同じリクエスト内では 1 回だけ DB を読む */
-export const getCurrentUser = cache(async (): Promise<SessionUser | null> =>
-  getSessionUser(getAuth(), await headers()),
-);
+export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
+  // 先に headers() を読む（リクエスト時に描画する画面になり、ビルド時の事前描画で DB に接続しない）
+  const requestHeaders = await headers();
+  return getSessionUser(getAuth(), requestHeaders);
+});
 
 /** ログイン画面の URL（表示中の画面に戻れるよう callbackUrl を付ける） */
 async function loginUrl(): Promise<string> {
