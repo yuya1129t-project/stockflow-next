@@ -66,16 +66,18 @@ DB を作り直したいときは `docker compose down -v` でボリュームご
 
 ### DB 関連のコマンド
 
-| コマンド             | 内容                                                                               |
-| -------------------- | ---------------------------------------------------------------------------------- |
-| `pnpm db:migrate`    | スキーマ変更からマイグレーションを作成して開発用 DB に適用（`prisma migrate dev`） |
-| `pnpm db:reset`      | 開発用 DB を作り直してシードを投入（**開発用 DB のデータはすべて消えます**）       |
-| `pnpm db:seed`       | シードだけを投入し直す（アプリのテーブルを空にしてから投入）                       |
-| `pnpm db:test:reset` | テスト用 DB（`DATABASE_URL_TEST`）にマイグレーションを適用してシードを投入         |
-| `pnpm db:generate`   | Prisma Client を生成（`pnpm install` 時にも自動で実行）                            |
+| コマンド             | 内容                                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------------------ |
+| `pnpm db:migrate`    | スキーマ変更からマイグレーションを作成して開発用 DB に適用（`prisma migrate dev`）               |
+| `pnpm db:reset`      | 接続先を確認してから開発用 DB を作り直し、シードを投入（**開発用 DB のデータはすべて消えます**） |
+| `pnpm db:seed`       | シードだけを投入し直す（このアプリの 14 テーブルを空にしてから投入。他のテーブルには触れません） |
+| `pnpm db:test:reset` | テスト用 DB（`DATABASE_URL_TEST`）にマイグレーションを適用してシードを投入                       |
+| `pnpm db:generate`   | Prisma Client を生成（`pnpm install` 時にも自動で実行）                                          |
 
 - スキーマは `prisma/schema.prisma`、マイグレーションは `prisma/migrations/`。数量 > 0・価格 ≥ 0 などの CHECK 制約はマイグレーション SQL に直接書いています
 - Prisma Client の生成物（`src/generated/prisma`）はコミットしません
+- データを消去するコマンド（`db:seed`・`db:reset`・`db:test:reset`）は、実行前に接続先の `host:port/DB` を表示し、接続先がローカル（`localhost`／`127.0.0.1`／`::1`）以外なら中止します。デモ環境の定期リセットなど意図した場合だけ `STOCKFLOW_ALLOW_DESTRUCTIVE_SEED=1` を設定してください
+- テスト用 DB は、DB 名が `_test` で終わり、開発用 DB（`DATABASE_URL`）と別の DB であることを確認してから使います（`scripts/db-guard.ts`。結合テストの接続時も同じ確認をします）
 
 ### シードデータ
 

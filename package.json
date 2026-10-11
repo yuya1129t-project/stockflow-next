@@ -20,7 +20,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev && prisma generate",
     "db:seed": "prisma db seed",
-    "db:reset": "prisma migrate reset --force && prisma db seed",
+    "db:reset": "tsx scripts/check-db-target.ts && prisma migrate reset --force && prisma db seed",
     "db:test:reset": "tsx scripts/with-test-db.ts prisma migrate deploy && tsx scripts/with-test-db.ts prisma db seed"
   },
   "dependencies": {
