@@ -15,7 +15,7 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   // ダッシュボードの中身は #9。トップページ自体はあるのでリンクにする
   { label: "ダッシュボード", href: "/", permission: "view", ready: true },
-  { label: "商品", href: "/products", permission: "view", ready: false },
+  { label: "商品", href: "/products", permission: "view", ready: true },
   { label: "取引先", href: "/partners", permission: "view", ready: false },
   { label: "受注", href: "/sales-orders", permission: "view", ready: false },
   { label: "発注", href: "/purchase-orders", permission: "view", ready: false },
