@@ -16,6 +16,26 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
+    # 結合テスト用の PostgreSQL（CI 専用のダミー値）
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: stockflow
+          POSTGRES_PASSWORD: stockflow
+          POSTGRES_DB: stockflow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stockflow -d stockflow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL_TEST: postgresql://stockflow:stockflow@localhost:5432/stockflow_test?schema=public
+
     steps:
       - uses: actions/checkout@v7
 
@@ -27,8 +47,11 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
+      # postinstall で Prisma Client を生成する（src/generated/prisma）
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      # テスト用 DB にマイグレーションとシードを適用してから、単体＋結合テスト
+      - run: pnpm db:test:reset
       - run: pnpm test
       - run: pnpm build
