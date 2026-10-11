@@ -17,6 +17,9 @@ build/
 *.key
 *credentials*
 *secrets*
+# ソースコードは対象外（認証まわりのファイル名で誤って除外されないように）
+!src/**/*credentials*
+!src/**/*secrets*
 
 # Claude ローカル設定
 .claude/settings.local.json

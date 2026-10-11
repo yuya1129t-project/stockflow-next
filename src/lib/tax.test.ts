@@ -32,6 +32,11 @@ describe("calcTax", () => {
     }
   });
 
+  it("安全な整数の上限付近でも切り捨てがずれない", () => {
+    expect(calcTax(9007199254740980)).toBe(900719925474098);
+    expect(calcTax(Number.MAX_SAFE_INTEGER)).toBe(900719925474099);
+  });
+
   it("負の値・小数は RangeError", () => {
     expect(() => calcTax(-1)).toThrow(RangeError);
     expect(() => calcTax(100.5)).toThrow(RangeError);
