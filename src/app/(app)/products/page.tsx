@@ -22,7 +22,11 @@ import { requirePermission } from "@/lib/auth/guards";
 import { can } from "@/lib/auth/permissions";
 import { getPrisma } from "@/lib/db";
 import { formatNumber } from "@/lib/format";
-import { listProductCategories, listProducts } from "@/lib/products/queries";
+import {
+  listProductCategories,
+  listProducts,
+  PRODUCT_EXPORT_MAX_ROWS,
+} from "@/lib/products/queries";
 import {
   parseProductListParams,
   PRODUCT_STATUS_LABELS,
@@ -76,18 +80,34 @@ export default async function ProductsPage({
   const from = result.total === 0 ? 0 : (result.page - 1) * result.perPage + 1;
   const to = Math.min(result.page * result.perPage, result.total);
   const exportQuery = toProductListQuery({ ...params, page: 1 });
+  const exportTooMany = result.total > PRODUCT_EXPORT_MAX_ROWS;
+  const exportTooManyMessage = `CSV 出力は ${formatNumber(PRODUCT_EXPORT_MAX_ROWS)} 件までです。絞り込んでから出力してください`;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="mr-auto text-xl font-semibold tracking-tight">商品</h1>
-        <a
-          href={`/api/products/export${exportQuery ? `?${exportQuery}` : ""}`}
-          className={buttonVariants({ variant: "outline", size: "sm" })}
-          download
-        >
-          CSV 出力
-        </a>
+        {exportTooMany ? (
+          // 上限を超えると出力は 413 になるので、ボタンを押せないようにして理由を示す
+          <span
+            aria-disabled="true"
+            title={exportTooManyMessage}
+            className={cn(
+              buttonVariants({ variant: "outline", size: "sm" }),
+              "pointer-events-none opacity-50",
+            )}
+          >
+            CSV 出力
+          </span>
+        ) : (
+          <a
+            href={`/api/products/export${exportQuery ? `?${exportQuery}` : ""}`}
+            className={buttonVariants({ variant: "outline", size: "sm" })}
+            download
+          >
+            CSV 出力
+          </a>
+        )}
         {can(user.role, "csv:import") && (
           <Link
             href="/products/import"
@@ -161,6 +181,10 @@ export default async function ProductsPage({
           </Link>
         </div>
       </Form>
+
+      {exportTooMany && (
+        <p className="text-sm text-destructive">{exportTooManyMessage}</p>
+      )}
 
       <p className="text-sm text-muted-foreground" aria-live="polite">
         {result.total === 0

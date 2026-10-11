@@ -173,13 +173,100 @@ describe("parseProductImport（取込の検証）", () => {
     });
   });
 
-  it("行番号は、項目内の改行があってもファイルの行を指す", () => {
+  it("項目内の改行（引用の中）は 1 行入力の項目ではエラー。行番号はファイルの行を指す", () => {
     const result = parse([
       HEADER,
       row("T-1", { 商品名: "1行目\n2行目" }),
       row("T-2", { 売価: "x" }),
     ]);
-    expect(!result.ok && result.errors[0].line).toBe(4);
+    expect(!result.ok && result.errors).toEqual([
+      {
+        line: 2,
+        field: "商品名",
+        message: "商品名に改行・タブなどの制御文字は使えません",
+      },
+      {
+        line: 4,
+        field: "売価",
+        message: "売価は0以上の整数で入力してください",
+      },
+    ]);
+  });
+
+  it("列が見出しより多い・少ない行は、その行を 1 件のエラーにする（列ずれのまま取り込まない）", () => {
+    const text =
+      HEADER.join(",") +
+      "\r\nT-1,ペン,文具,個,1,200,800,5\r\nT-2,ノート,文具\r\nT-3,消しゴム,文具,個,80,40,5\r\n";
+    expect(parseProductImport(bytesOf(text))).toEqual({
+      ok: false,
+      totalErrors: 2,
+      errors: [
+        {
+          line: 2,
+          field: null,
+          message:
+            '列の数が見出し行と違います（見出し 7 列・この行 8 列）。カンマを含む値は "" で囲んでください',
+        },
+        {
+          line: 3,
+          field: null,
+          message:
+            '列の数が見出し行と違います（見出し 7 列・この行 3 列）。カンマを含む値は "" で囲んでください',
+        },
+      ],
+    });
+  });
+
+  it("出力 CSV（9 列）の売価を囲まずに 1,200 と書き換えた行もエラー（レビューの再現例）", () => {
+    const text =
+      PRODUCT_CSV_HEADERS.join(",") +
+      "\r\nZR-1,ペン,文具,個,1,200,800,3,12,有効\r\n";
+    const result = parseProductImport(bytesOf(text));
+    expect(!result.ok && result.errors[0].message).toContain(
+      "見出し 9 列・この行 10 列",
+    );
+  });
+
+  it("閉じ忘れの引用符で後続の行を飲み込まない（レビューの再現例）", () => {
+    const text =
+      HEADER.join(",") +
+      '\r\nZR-2,"ペン,文具,個,100,50,5\r\nZR-3,ノート,文具,冊,200,100,5\r\nZR-4,"消しゴム",文具,個,80,40,5\r\n';
+    const result = parseProductImport(bytesOf(text));
+    expect(!result.ok && result.errors[0]).toMatchObject({
+      line: 4,
+      message: expect.stringContaining('2 行目の " が閉じられていない'),
+    });
+  });
+
+  it("商品コードは大文字に揃えて照合する（小文字と大文字の重複も検出）", () => {
+    const result = parse([HEADER, row("t-1"), row("T-1")]);
+    expect(!result.ok && result.errors[0].message).toBe(
+      "商品コード「T-1」が 2 行目と重複しています",
+    );
+    const ok = parse([HEADER, row("ab-1")]);
+    expect(ok.ok && ok.rows[0].data.code).toBe("AB-1");
+  });
+
+  it("元から ' で始まる値（'-特価品）は、出力して取り込むと元に戻る", () => {
+    const csv = buildProductCsv([
+      {
+        code: "P-1",
+        name: "'-特価品",
+        category: "'=分類",
+        unit: "'個",
+        salesPrice: 1,
+        purchasePrice: 1,
+        reorderPoint: 1,
+        stock: 0,
+        isActive: true,
+      },
+    ]);
+    const result = parseProductImport(bytesOf(CSV_BOM + csv));
+    expect(result.ok && result.rows[0].data).toMatchObject({
+      name: "'-特価品",
+      category: "'=分類",
+      unit: "'個",
+    });
   });
 
   it("必須の見出しが無い・重複しているとエラー", () => {

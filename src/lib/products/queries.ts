@@ -112,19 +112,26 @@ export async function listProducts(
   return { items, total: count, page, totalPages, perPage };
 }
 
-/** CSV 出力の上限（念のため。商品マスタの想定件数より十分大きい値） */
+/** CSV 出力の上限件数（超えたら出力せず、絞り込みを促す） */
 export const PRODUCT_EXPORT_MAX_ROWS = 10_000;
 
-/** CSV 出力用（絞り込み・並べ替えは一覧と同じ。ページ送りはしない） */
+/**
+ * CSV 出力用（絞り込み・並べ替えは一覧と同じ。ページ送りはしない）。
+ * 上限＋1 件まで取得し、上限を超えたら overLimit: true（黙って切り捨てない）
+ */
 export async function listProductsForCsv(
   db: PrismaClient,
   params: ProductListParams,
-): Promise<ProductListItem[]> {
-  return db.$queryRaw<ProductListItem[]>`
+  limit: number = PRODUCT_EXPORT_MAX_ROWS,
+): Promise<{ items: ProductListItem[]; overLimit: boolean }> {
+  const rows = await db.$queryRaw<ProductListItem[]>`
     ${SELECT_WITH_STOCK}
     ${whereClause(params)}
     ${orderClause(params)}
-    LIMIT ${PRODUCT_EXPORT_MAX_ROWS}`;
+    LIMIT ${limit + 1}`;
+  return rows.length > limit
+    ? { items: rows.slice(0, limit), overLimit: true }
+    : { items: rows, overLimit: false };
 }
 
 /** 詳細（現在庫を含む）。無ければ null */

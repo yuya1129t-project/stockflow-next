@@ -3,16 +3,21 @@
  *
  * - 出力: 区切りはカンマ、改行は CRLF。Excel で文字化けしないよう先頭に BOM を付けるのは呼び出し側
  *   （CSV_BOM）。数式として解釈される文字（= + - @ など）で始まる文字列は先頭に ' を付けて無害化する
- * - 読み込み: ダブルクォートで囲んだ項目（カンマ・改行・"" を含む）に対応。各レコードの開始行番号を返す
+ * - 読み込み: ダブルクォートで囲んだ項目（カンマ・改行・"" を含む）に対応。各レコードの開始行番号を返す。
+ *   RFC 4180 に沿わない引用（閉じた " の直後に文字が続く・囲んでいない項目の途中の "・閉じていない "）は
+ *   エラーにする（列がずれたり後続の行が 1 つの項目に飲み込まれたりしたまま取り込まないため）
  */
 
 export const CSV_BOM = "﻿";
 
 /** 表計算ソフトで数式として解釈されうる先頭文字（CSV インジェクション対策。OWASP の推奨） */
-const FORMULA_PREFIX = /^[=+\-@\t\r]/;
+const FORMULA_PREFIX = /^'*[=+\-@\t\r]/;
+/** 無害化で付けた ' が先頭にある値（取込で 1 つ外す） */
+const SANITIZED_PREFIX = /^'+[=+\-@\t\r]/;
 
 /**
  * 数式として解釈されないよう、危険な文字で始まる文字列の先頭に ' を付ける。
+ * 元から ' が並んだ後に危険な文字が続く値（'-特価品 など）にも 1 つ付け、取込で元に戻せるようにする（対称）。
  * 数値のセル（number）はそのまま出力するので、この関数は文字列のセルにだけ使う
  */
 export function sanitizeCsvCell(value: string): string {
@@ -20,13 +25,11 @@ export function sanitizeCsvCell(value: string): string {
 }
 
 /**
- * sanitizeCsvCell で付けた ' を取り除く（このアプリで出力した CSV を取り込み直したとき元の値に戻す）。
- * ' の直後が危険な文字のときだけ外す
+ * sanitizeCsvCell で付けた ' を 1 つ取り除く（このアプリで出力した CSV を取り込み直したとき元の値に戻す）。
+ * 1 つ以上の ' の後に危険な文字が続くときだけ外す
  */
 export function unsanitizeCsvCell(value: string): string {
-  return value.startsWith("'") && FORMULA_PREFIX.test(value.slice(1))
-    ? value.slice(1)
-    : value;
+  return SANITIZED_PREFIX.test(value) ? value.slice(1) : value;
 }
 
 export type CsvCell = string | number | null | undefined;
@@ -56,8 +59,8 @@ export type ParseCsvResult =
   | { ok: false; line: number; message: string };
 
 /**
- * CSV の文字列をレコードの配列にする。先頭の BOM は取り除く。
- * 末尾の改行の有無は問わない。囲みのダブルクォートが閉じていなければエラー
+ * CSV の文字列をレコードの配列にする。先頭の BOM は取り除く。末尾の改行の有無は問わない。
+ * 引用の誤りはエラー（行番号付き）
  */
 export function parseCsv(input: string): ParseCsvResult {
   const text = input.startsWith(CSV_BOM) ? input.slice(1) : input;
@@ -89,8 +92,25 @@ export function parseCsv(input: string): ParseCsvResult {
         if (text[i + 1] === '"') {
           cell += '"';
           i++;
-        } else {
-          inQuotes = false;
+          continue;
+        }
+        inQuotes = false;
+        // 閉じた " の直後は区切り・改行・終端のどれか（"abc"def のような入力は受け付けない）
+        const next = text[i + 1];
+        if (
+          next !== undefined &&
+          next !== "," &&
+          next !== "\r" &&
+          next !== "\n"
+        ) {
+          return {
+            ok: false,
+            line,
+            message:
+              quoteStartLine === line
+                ? 'ダブルクォート（"）で囲んだ項目の直後に文字があります。項目全体を " で囲み、中の " は "" と書いてください'
+                : `ダブルクォート（"）で囲んだ項目の直後に文字があります。${quoteStartLine} 行目の " が閉じられていない可能性があります`,
+          };
         }
       } else {
         if (c === "\n" || (c === "\r" && text[i + 1] !== "\n")) line++;
@@ -103,7 +123,16 @@ export function parseCsv(input: string): ParseCsvResult {
       recordLine = line;
       started = true;
     }
-    if (c === '"' && cell === "") {
+    if (c === '"') {
+      // 引用は項目の先頭からだけ（a,b"c や a, "b" のような入力は受け付けない）
+      if (cell !== "") {
+        return {
+          ok: false,
+          line,
+          message:
+            'ダブルクォート（"）を含む値は、項目全体を " で囲み、中の " は "" と書いてください（区切りのカンマの後に空白を入れないでください）',
+        };
+      }
       inQuotes = true;
       quoteStartLine = line;
     } else if (c === ",") {

@@ -197,9 +197,36 @@ export interface ProductImportSummary {
   unchanged: number;
 }
 
+/** 取込の更新を 1 文にまとめる行数（1 行あたり 7 個のパラメータ。PostgreSQL の上限 65,535 個に十分収まる） */
+export const IMPORT_UPDATE_CHUNK_SIZE = 500;
+
+/** UPDATE … FROM (VALUES …) で複数の商品をまとめて更新する SQL（値はすべてパラメータで渡す） */
+function bulkUpdateSql(
+  rows: readonly { id: number; data: ProductInput }[],
+): Prisma.Sql {
+  const values = rows.map(
+    ({ id, data }) =>
+      Prisma.sql`(${id}::int, ${data.name}::text, ${data.category}::text, ${data.unit}::text, ${data.salesPrice}::int, ${data.purchasePrice}::int, ${data.reorderPoint}::int)`,
+  );
+  return Prisma.sql`
+    UPDATE "product" AS p SET
+      "name" = v."name",
+      "category" = v."category",
+      "unit" = v."unit",
+      "salesPrice" = v."salesPrice",
+      "purchasePrice" = v."purchasePrice",
+      "reorderPoint" = v."reorderPoint",
+      -- Prisma の @updatedAt と同じく UTC で保存する（列は timestamp without time zone）
+      "updatedAt" = NOW() AT TIME ZONE 'UTC'
+    FROM (VALUES ${Prisma.join(values)})
+      AS v("id", "name", "category", "unit", "salesPrice", "purchasePrice", "reorderPoint")
+    WHERE p."id" = v."id"`;
+}
+
 /**
  * CSV 取込の書き込み（検証済みの行。parseProductImport の結果）。
- * code が既存なら更新、なければ新規。1 トランザクションで行い、操作履歴は件数の要約を 1 件だけ残す
+ * code が既存なら更新、なければ新規（有効／無効は変えない）。1 トランザクションで行い、
+ * 操作履歴は商品ごとの登録・更新と、件数の要約 1 件を残す
  */
 export async function importProducts(
   db: PrismaClient,
@@ -222,7 +249,11 @@ export async function importProducts(
         const byCode = new Map(existing.map((p) => [p.code, p]));
 
         const toCreate: ProductInput[] = [];
-        let updated = 0;
+        const toUpdate: {
+          id: number;
+          data: ProductInput;
+          changes: string[];
+        }[] = [];
         let unchanged = 0;
         for (const { data } of rows) {
           const current = byCode.get(data.code);
@@ -230,26 +261,58 @@ export async function importProducts(
             toCreate.push(data);
             continue;
           }
-          if (describeProductChanges(pickInput(current), data).length === 0) {
+          const changes = describeProductChanges(pickInput(current), data);
+          if (changes.length === 0) {
             unchanged++;
             continue;
           }
-          await tx.product.update({ where: { id: current.id }, data });
-          updated++;
-        }
-        if (toCreate.length > 0) {
-          await tx.product.createMany({ data: toCreate });
+          toUpdate.push({ id: current.id, data, changes });
         }
 
-        const result = { created: toCreate.length, updated, unchanged };
-        await tx.auditLog.create({
-          data: {
-            userId: auth.user.id,
-            action: "import",
-            targetType: PRODUCT_TARGET_TYPE,
-            targetId: null,
-            summary: `商品を CSV で取り込みました（${fileName}: 新規 ${result.created} 件・更新 ${result.updated} 件・変更なし ${result.unchanged} 件）`,
-          },
+        // 更新は数百行ずつ 1 文にまとめる（1 行ずつだと DB との往復が行数分かかる）
+        for (let i = 0; i < toUpdate.length; i += IMPORT_UPDATE_CHUNK_SIZE) {
+          await tx.$executeRaw(
+            bulkUpdateSql(toUpdate.slice(i, i + IMPORT_UPDATE_CHUNK_SIZE)),
+          );
+        }
+        const created =
+          toCreate.length > 0
+            ? await tx.product.createManyAndReturn({
+                data: toCreate,
+                select: { id: true, code: true, name: true },
+              })
+            : [];
+
+        // 商品ごとの履歴（画面での登録・編集と同じ形。CSV 取込によるものと分かるようにする）と、件数の要約 1 件
+        const result = {
+          created: created.length,
+          updated: toUpdate.length,
+          unchanged,
+        };
+        await tx.auditLog.createMany({
+          data: [
+            ...created.map((p) => ({
+              userId: auth.user.id,
+              action: "create",
+              targetType: PRODUCT_TARGET_TYPE,
+              targetId: String(p.id),
+              summary: `商品 ${p.code}「${p.name}」を登録しました（CSV 取込）`,
+            })),
+            ...toUpdate.map((u) => ({
+              userId: auth.user.id,
+              action: "update",
+              targetType: PRODUCT_TARGET_TYPE,
+              targetId: String(u.id),
+              summary: `商品 ${u.data.code} を更新しました（CSV 取込: ${u.changes.join("、")}）`,
+            })),
+            {
+              userId: auth.user.id,
+              action: "import",
+              targetType: PRODUCT_TARGET_TYPE,
+              targetId: null,
+              summary: `商品を CSV で取り込みました（${fileName}: 新規 ${result.created} 件・更新 ${result.updated} 件・変更なし ${result.unchanged} 件）`,
+            },
+          ],
         });
         return result;
       },

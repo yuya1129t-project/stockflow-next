@@ -16,20 +16,25 @@ vi.mock("@/lib/auth/guards", () => ({
 }));
 vi.mock("@/lib/db", () => ({ getPrisma: vi.fn(() => ({})) }));
 vi.mock("@/lib/products/queries", () => ({
-  listProductsForCsv: vi.fn(async () => [
-    {
-      id: 1,
-      code: "P-0001",
-      name: "@テスト",
-      category: "文具",
-      unit: "個",
-      salesPrice: 100,
-      purchasePrice: 60,
-      reorderPoint: 5,
-      isActive: true,
-      stock: 3,
-    },
-  ]),
+  // 上限を小さく差し替える（超えたかどうかの判定は listProductsForCsv が返し、結合テストで確認している）
+  PRODUCT_EXPORT_MAX_ROWS: 2,
+  listProductsForCsv: vi.fn(async () => ({
+    overLimit: false,
+    items: [
+      {
+        id: 1,
+        code: "P-0001",
+        name: "@テスト",
+        category: "文具",
+        unit: "個",
+        salesPrice: 100,
+        purchasePrice: 60,
+        reorderPoint: 5,
+        isActive: true,
+        stock: 3,
+      },
+    ],
+  })),
 }));
 
 const VIEWER = {
@@ -87,6 +92,24 @@ describe("GET /api/products/export", () => {
         order: "desc",
         page: 3,
       },
+    );
+  });
+
+  it("上限を超えるときは出力せず 413 と日本語のメッセージ", async () => {
+    auth.result = { ok: true, user: VIEWER };
+    vi.mocked(listProductsForCsv).mockResolvedValueOnce({
+      items: [],
+      overLimit: true,
+    });
+    const response = await GET(
+      new Request("http://localhost:3000/api/products/export"),
+    );
+    expect(response.status).toBe(413);
+    expect(response.headers.get("content-type")).toBe(
+      "text/plain; charset=utf-8",
+    );
+    expect(await response.text()).toBe(
+      "件数が多すぎます。絞り込んでから出力してください（上限 2 件）",
     );
   });
 });

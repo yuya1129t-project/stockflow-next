@@ -44,6 +44,11 @@ function requiredText(field: ProductField, max: number) {
       // 空のときは形式のエラーを重ねて出さない
       .min(1, { error: `${label}を入力してください`, abort: true })
       .max(max, `${label}は${max}文字以内で入力してください`)
+      // 1 行で入力する項目（CSV の引用の中の改行・タブなども受け付けない）
+      .regex(
+        /^[^\u0000-\u001f\u007f]*$/,
+        `${label}に改行・タブなどの制御文字は使えません`,
+      )
   );
 }
 
@@ -91,10 +96,13 @@ function nonNegativeInt(field: ProductField, max: number) {
 }
 
 export const productInputSchema = z.object({
-  code: requiredText("code", PRODUCT_LIMITS.code).regex(
-    /^[A-Za-z0-9][A-Za-z0-9_-]*$/,
-    "商品コードは半角英数字・ハイフン（-）・アンダースコア（_）で入力してください（先頭は英数字）",
-  ),
+  code: requiredText("code", PRODUCT_LIMITS.code)
+    .regex(
+      /^[A-Za-z0-9][A-Za-z0-9_-]*$/,
+      "商品コードは半角英数字・ハイフン（-）・アンダースコア（_）で入力してください（先頭は英数字）",
+    )
+    // 大文字に揃える（p-0001 と P-0001 を別の商品にしない。CSV 取込の照合も大文字で行う）
+    .toUpperCase(),
   name: requiredText("name", PRODUCT_LIMITS.name),
   category: requiredText("category", PRODUCT_LIMITS.category),
   unit: requiredText("unit", PRODUCT_LIMITS.unit),

@@ -24,8 +24,22 @@ describe("sanitizeCsvCell（CSV インジェクション対策）", () => {
     },
   );
 
-  it("unsanitizeCsvCell で元に戻る（' の後が危険な文字のときだけ外す）", () => {
-    expect(unsanitizeCsvCell(sanitizeCsvCell("=1+2"))).toBe("=1+2");
+  it("' が並んだ後に危険な文字が続く値にも ' を 1 つ付ける", () => {
+    expect(sanitizeCsvCell("'-特価品")).toBe("''-特価品");
+    expect(sanitizeCsvCell("''=x")).toBe("'''=x");
+    expect(sanitizeCsvCell("'abc")).toBe("'abc");
+  });
+
+  it.each(["=1+2", "-x", "'-特価品", "'=分類", "''@x", "'abc", "abc", "'", ""])(
+    "%j は出力 → 取込（sanitize → unsanitize）で元に戻る",
+    (value) => {
+      expect(unsanitizeCsvCell(sanitizeCsvCell(value))).toBe(value);
+    },
+  );
+
+  it("unsanitizeCsvCell は ' の後が危険な文字のときだけ 1 つ外す", () => {
+    expect(unsanitizeCsvCell("'=1")).toBe("=1");
+    expect(unsanitizeCsvCell("''-x")).toBe("'-x");
     expect(unsanitizeCsvCell("'abc")).toBe("'abc");
     expect(unsanitizeCsvCell("abc")).toBe("abc");
   });
@@ -73,14 +87,41 @@ describe("parseCsv", () => {
   });
 
   it('囲みの中のカンマ・""・改行を扱い、レコードの開始行を返す', () => {
-    const result = parseCsv('h1,h2\n"a,b","x\r\ny ""z"""\nlast,"")\n');
+    const result = parseCsv('h1,h2\n"a,b","x\r\ny ""z"""\nlast,""\n');
     expect(result).toEqual({
       ok: true,
       records: [
         { line: 1, cells: ["h1", "h2"] },
         { line: 2, cells: ["a,b", 'x\r\ny "z"'] },
-        { line: 4, cells: ["last", ")"] },
+        { line: 4, cells: ["last", ""] },
       ],
+    });
+  });
+
+  it.each([
+    ['"abc"def,x', 1, "直後に文字があります"],
+    ['h\n"a")', 2, "直後に文字があります"],
+    ['a,b"c,d', 1, "項目全体を"],
+    ['a, "b,c",d', 1, "項目全体を"],
+  ])(
+    "RFC 4180 に沿わない引用 %j はエラー（%i 行目）",
+    (input, line, message) => {
+      expect(parseCsv(input)).toEqual({
+        ok: false,
+        line,
+        message: expect.stringContaining(message),
+      });
+    },
+  );
+
+  it('閉じ忘れの " が後ろの行の " で閉じられても、行を飲み込まずにエラーにする（閉じ忘れの行を示す）', () => {
+    const result = parseCsv(
+      'h1,h2,h3\nZR-2,"ペン,文具\nZR-3,ノート,文具\nZR-4,"消しゴム",文具\n',
+    );
+    expect(result).toEqual({
+      ok: false,
+      line: 4,
+      message: expect.stringContaining('2 行目の " が閉じられていない'),
     });
   });
 

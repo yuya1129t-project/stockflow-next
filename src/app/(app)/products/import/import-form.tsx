@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState } from "react";
+import { useActionState, useState, type FormEvent } from "react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
+import { PRODUCT_IMPORT_MAX_BYTES } from "@/lib/products/csv";
+
 import { importProductsAction, type ImportProductsState } from "../actions";
 
 const INITIAL_STATE: ImportProductsState = { status: "idle" };
@@ -25,11 +27,27 @@ export function ImportForm() {
     importProductsAction,
     INITIAL_STATE,
   );
+  const [clientError, setClientError] = useState<string>();
+
+  // 大きすぎるファイルは送信しない（Server Action の本文の上限 1MB を超えると、サーバー側の検査に届く前に
+  // Next.js が拒否するため）。サーバー側でも同じ上限を検査する
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    const file = new FormData(event.currentTarget).get("file");
+    if (file instanceof File && file.size > PRODUCT_IMPORT_MAX_BYTES) {
+      event.preventDefault();
+      setClientError(
+        `ファイルが大きすぎます（上限 ${PRODUCT_IMPORT_MAX_BYTES / 1024}KB）。ファイルを分けて取り込んでください`,
+      );
+      return;
+    }
+    setClientError(undefined);
+  }
 
   return (
     <div className="space-y-4">
       <form
         action={formAction}
+        onSubmit={handleSubmit}
         className="flex max-w-2xl flex-wrap items-end gap-2"
       >
         <div className="grid w-full gap-1.5 sm:w-auto sm:min-w-80">
@@ -47,7 +65,16 @@ export function ImportForm() {
         </Button>
       </form>
 
-      {state.status === "success" && (
+      {clientError && (
+        <p
+          role="alert"
+          className="max-w-2xl rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+        >
+          {clientError}
+        </p>
+      )}
+
+      {!clientError && state.status === "success" && (
         <div
           role="status"
           className="max-w-2xl space-y-2 rounded-lg border border-emerald-600/30 bg-emerald-600/5 p-3 text-sm"
@@ -66,7 +93,7 @@ export function ImportForm() {
         </div>
       )}
 
-      {state.status === "error" && (
+      {!clientError && state.status === "error" && (
         <div role="alert" className="space-y-3">
           <p className="max-w-2xl rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             {state.fileName && (

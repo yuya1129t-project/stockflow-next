@@ -27,6 +27,7 @@ import {
   createProduct,
   importProductCsv,
   importProducts,
+  IMPORT_UPDATE_CHUNK_SIZE,
   PRODUCT_TARGET_TYPE,
   setProductActive,
   updateProduct,
@@ -97,6 +98,11 @@ afterAll(async () => {
   }
 });
 
+/** CSV 出力と同じ取得（上限内の行） */
+async function exportRows(p: ProductListParams) {
+  return (await listProductsForCsv(prisma, p)).items;
+}
+
 function params(overrides: Partial<ProductListParams> = {}): ProductListParams {
   return { ...DEFAULT_PRODUCT_LIST_PARAMS, ...overrides };
 }
@@ -164,7 +170,7 @@ describe("一覧（検索・並べ替え・ページ送り・現在庫）", () =
       _sum: { quantity: true },
     });
     const expected = new Map(sums.map((s) => [s.productId, s._sum.quantity]));
-    const all = await listProductsForCsv(prisma, params({ status: "all" }));
+    const all = await exportRows(params({ status: "all" }));
     expect(all.length).toBe(await prisma.product.count());
     const rows = await listProducts(prisma, params({ status: "all" }));
     for (const item of rows.items) {
@@ -176,7 +182,7 @@ describe("一覧（検索・並べ替え・ページ送り・現在庫）", () =
   });
 
   it("シードには発注点を下回る商品がある（強調表示の対象）", async () => {
-    const all = await listProductsForCsv(prisma, params());
+    const all = await exportRows(params());
     expect(all.some((p) => p.stock < p.reorderPoint)).toBe(true);
   });
 
@@ -217,26 +223,20 @@ describe("一覧（検索・並べ替え・ページ送り・現在庫）", () =
   });
 
   it("現在庫・売価・商品名で並べ替えられる（昇順・降順）", async () => {
-    const byStockDesc = await listProductsForCsv(
-      prisma,
+    const byStockDesc = await exportRows(
       params({ sort: "stock", order: "desc" }),
     );
     const stocks = byStockDesc.map((p) => p.stock);
     expect(stocks).toEqual([...stocks].sort((a, b) => b - a));
 
-    const byPrice = await listProductsForCsv(
-      prisma,
+    const byPrice = await exportRows(
       params({ sort: "salesPrice", order: "asc" }),
     );
     const prices = byPrice.map((p) => p.salesPrice);
     expect(prices).toEqual([...prices].sort((a, b) => a - b));
 
-    const byNameAsc = await listProductsForCsv(
-      prisma,
-      params({ sort: "name" }),
-    );
-    const byNameDesc = await listProductsForCsv(
-      prisma,
+    const byNameAsc = await exportRows(params({ sort: "name" }));
+    const byNameDesc = await exportRows(
       params({ sort: "name", order: "desc" }),
     );
     expect(byNameDesc.map((p) => p.id)).toEqual(
@@ -249,7 +249,7 @@ describe("一覧（検索・並べ替え・ページ送り・現在庫）", () =
     const page2 = await listProducts(prisma, params({ page: 2 }));
     expect(page2.page).toBe(2);
     expect(page2.items[0].code > page1.items.at(-1)!.code).toBe(true);
-    const all = await listProductsForCsv(prisma, params());
+    const all = await exportRows(params());
     expect([...page1.items, ...page2.items].map((p) => p.code)).toEqual(
       all.slice(0, PRODUCTS_PER_PAGE * 2).map((p) => p.code),
     );
@@ -316,6 +316,17 @@ describe("登録・編集", () => {
     expect(
       await prisma.product.count({ where: { code: `${PREFIX}DUP` } }),
     ).toBe(1);
+  });
+
+  it("商品コードは大文字に揃えて保存し、小文字で書いても重複として扱う", async () => {
+    const id = await create(`${PREFIX}case-1`.toLowerCase());
+    expect(
+      (await prisma.product.findUniqueOrThrow({ where: { id } })).code,
+    ).toBe(`${PREFIX}CASE-1`);
+    const result = await createProduct(prisma, STAFF, form(`${PREFIX}Case-1`));
+    expect(!result.ok && result.error).toBe(
+      `商品コード「${PREFIX}CASE-1」はすでに登録されています`,
+    );
   });
 
   it("入力エラーは項目ごとの日本語のエラーで、登録しない", async () => {
@@ -467,9 +478,9 @@ describe("権限（サーバー側で検査する）", () => {
 });
 
 describe("CSV 取込", () => {
-  it("全件成功: 既存の商品コードは更新・未登録は新規。操作履歴は件数の要約 1 件", async () => {
+  it("全件成功: 既存の商品コードは更新・未登録は新規（小文字のコードも照合）。操作履歴は商品ごと＋件数の要約 1 件", async () => {
     const existingId = await create(`${PREFIX}CSV-1`);
-    await create(`${PREFIX}CSV-2`);
+    const unchangedId = await create(`${PREFIX}CSV-2`);
     const beforeLogs = await prisma.auditLog.count();
 
     const result = await importProductCsv(
@@ -477,7 +488,11 @@ describe("CSV 取込", () => {
       STAFF,
       csvBytes([
         CSV_HEADER,
-        csvRow(`${PREFIX}CSV-1`, { salesPrice: "999", name: "名前を変更" }),
+        // 小文字で書いても既存の ZT-CSV-1 の更新になる
+        csvRow(`${PREFIX}csv-1`.toLowerCase(), {
+          salesPrice: "999",
+          name: "名前を変更",
+        }),
         csvRow(`${PREFIX}CSV-2`), // 変更なし
         csvRow(`${PREFIX}CSV-3`),
         csvRow(`${PREFIX}CSV-4`, { reorderPoint: "0" }),
@@ -490,14 +505,29 @@ describe("CSV 取込", () => {
     });
     expect(
       await prisma.product.findUniqueOrThrow({ where: { id: existingId } }),
-    ).toMatchObject({ salesPrice: 999, name: "名前を変更" });
-    expect(
-      await prisma.product.findUniqueOrThrow({
-        where: { code: `${PREFIX}CSV-4` },
-      }),
-    ).toMatchObject({ reorderPoint: 0, isActive: true });
+    ).toMatchObject({
+      code: `${PREFIX}CSV-1`,
+      salesPrice: 999,
+      name: "名前を変更",
+    });
+    const created4 = await prisma.product.findUniqueOrThrow({
+      where: { code: `${PREFIX}CSV-4` },
+    });
+    expect(created4).toMatchObject({ reorderPoint: 0, isActive: true });
 
-    expect(await prisma.auditLog.count()).toBe(beforeLogs + 1);
+    // 新規 2・更新 1 の商品ごとの履歴と、要約 1 件（変更なしの商品には残さない）
+    expect(await prisma.auditLog.count()).toBe(beforeLogs + 4);
+    expect((await auditLogsOf(existingId)).at(-1)).toMatchObject({
+      userId: STAFF.id,
+      action: "update",
+      summary: `商品 ${PREFIX}CSV-1 を更新しました（CSV 取込: 商品名: 結合テスト商品 ${PREFIX}CSV-1 → 名前を変更、売価: 150 → 999）`,
+    });
+    expect((await auditLogsOf(created4.id)).map((l) => l.summary)).toEqual([
+      `商品 ${PREFIX}CSV-4「結合テスト商品 ${PREFIX}CSV-4」を登録しました（CSV 取込）`,
+    ]);
+    expect((await auditLogsOf(unchangedId)).map((l) => l.action)).toEqual([
+      "create",
+    ]);
     const log = await prisma.auditLog.findFirstOrThrow({
       where: { action: "import" },
       orderBy: { id: "desc" },
@@ -509,6 +539,117 @@ describe("CSV 取込", () => {
       summary:
         "商品を CSV で取り込みました（products.csv: 新規 2 件・更新 1 件・変更なし 1 件）",
     });
+  });
+
+  it("無効な商品を「状態=有効」の CSV で更新しても無効のまま。現在庫（入出庫）も変わらない", async () => {
+    const id = await create(`${PREFIX}CSV-INACTIVE`);
+    expect((await setProductActive(prisma, ADMIN, id, false)).ok).toBe(true);
+    const movementsBefore = await prisma.stockMovement.count();
+
+    // 出力 CSV と同じ 9 列（現在庫・状態の列は読み飛ばされる）
+    const result = await importProductCsv(
+      prisma,
+      STAFF,
+      csvBytes([
+        [...CSV_HEADER, "現在庫", "状態"],
+        [
+          ...csvRow(`${PREFIX}CSV-INACTIVE`, { salesPrice: "321" }),
+          "999",
+          "有効",
+        ],
+      ]),
+      "status.csv",
+    );
+    expect(result).toEqual({
+      ok: true,
+      data: { created: 0, updated: 1, unchanged: 0 },
+    });
+    expect(
+      await prisma.product.findUniqueOrThrow({ where: { id } }),
+    ).toMatchObject({ salesPrice: 321, isActive: false });
+    expect(await prisma.stockMovement.count()).toBe(movementsBefore);
+  });
+
+  it("まとめて更新する単位（500 行）をまたぐ件数でも、すべての行を更新する", async () => {
+    const count = IMPORT_UPDATE_CHUNK_SIZE + 1;
+    const codes = Array.from(
+      { length: count },
+      (_, i) => `${PREFIX}BULK-${String(i).padStart(4, "0")}`,
+    );
+    await prisma.product.createMany({
+      data: codes.map((code) => ({
+        code,
+        name: "一括",
+        category: "結合テスト",
+        unit: "個",
+        salesPrice: 1,
+        purchasePrice: 1,
+        reorderPoint: 1,
+      })),
+    });
+    const result = await importProductCsv(
+      prisma,
+      ADMIN,
+      csvBytes([
+        CSV_HEADER,
+        ...codes.map((code, i) =>
+          csvRow(code, {
+            name: "一括",
+            salesPrice: String(i + 10),
+            purchasePrice: "1",
+            reorderPoint: "1",
+          }),
+        ),
+      ]),
+      "bulk.csv",
+    );
+    expect(result).toEqual({
+      ok: true,
+      data: { created: 0, updated: count, unchanged: 0 },
+    });
+    const updated = await prisma.product.findMany({
+      where: { code: { in: codes } },
+      orderBy: { code: "asc" },
+    });
+    expect(updated.map((p) => p.salesPrice)).toEqual(
+      codes.map((_, i) => i + 10),
+    );
+    expect(updated.every((p) => p.unit === "個" && p.isActive)).toBe(true);
+  });
+
+  it("列ずれ（囲んでいない 1,200）・閉じ忘れの引用符は取り込まない", async () => {
+    const before = await prisma.product.count();
+    const text = (body: string) =>
+      new TextEncoder().encode(`${CSV_HEADER.join(",")}\r\n${body}`);
+    const shifted = await importProductCsv(
+      prisma,
+      ADMIN,
+      text(`${PREFIX}SHIFT,ペン,文具,個,1,200,800,5\r\n`),
+      "shift.csv",
+    );
+    expect(!shifted.ok && shifted.errors[0].message).toContain(
+      "列の数が見出し行と違います（見出し 7 列・この行 8 列）",
+    );
+    const unclosed = await importProductCsv(
+      prisma,
+      ADMIN,
+      text(
+        `${PREFIX}Q2,"ペン,文具,個,100,50,5\r\n${PREFIX}Q3,ノート,文具,冊,200,100,5\r\n${PREFIX}Q4,"消しゴム",文具,個,80,40,5\r\n`,
+      ),
+      "quote.csv",
+    );
+    expect(unclosed.ok).toBe(false);
+    expect(await prisma.product.count()).toBe(before);
+  });
+
+  it(`CSV 出力は上限を超えると overLimit（黙って切り捨てない）`, async () => {
+    const total = await prisma.product.count({ where: { isActive: true } });
+    expect(await listProductsForCsv(prisma, params(), total)).toMatchObject({
+      overLimit: false,
+    });
+    const over = await listProductsForCsv(prisma, params(), 3);
+    expect(over.overLimit).toBe(true);
+    expect(over.items).toHaveLength(3);
   });
 
   it("1 行でもエラーがあれば全体を取り込まない（行番号付きのエラー）", async () => {

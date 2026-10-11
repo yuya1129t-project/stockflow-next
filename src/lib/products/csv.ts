@@ -6,6 +6,7 @@
  * - 商品コード・商品名・カテゴリ・単位・売価・仕入単価・発注点の列が必須。それ以外の列（出力 CSV の
  *   現在庫・状態など）は読み飛ばす（有効／無効は CSV では変えない。無効化は admin だけの操作のため）
  * - データ行は 1,000 行まで。ファイルは 512KB まで
+ * - データ行の列数は見出し行と同じであること（列ずれのまま取り込まない）
  * - 1 行でもエラーがあれば全体を取り込まない（エラーは行番号付きで返す）
  */
 import { decodeUtf8, parseCsv, toCsv, unsanitizeCsvCell } from "@/lib/csv";
@@ -167,7 +168,17 @@ export function parseProductImport(
   const rows: ProductImportRow[] = [];
   const lineOfCode = new Map<string, number>();
 
+  const columnCount = header.cells.length;
   for (const record of dataRecords) {
+    // 列数が見出しと違う行は、値が別の列にずれている（囲んでいない 1,200 など）ので 1 件のエラーにする
+    if (record.cells.length !== columnCount) {
+      errors.push({
+        line: record.line,
+        field: null,
+        message: `列の数が見出し行と違います（見出し ${columnCount} 列・この行 ${record.cells.length} 列）。カンマを含む値は "" で囲んでください`,
+      });
+      continue;
+    }
     const raw = Object.fromEntries(
       PRODUCT_FIELDS.map((field) => [
         field,

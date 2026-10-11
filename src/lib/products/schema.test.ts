@@ -92,6 +92,21 @@ describe("productInputSchema", () => {
     },
   );
 
+  it("商品コードは大文字に揃える", () => {
+    expect(productInputSchema.parse({ ...VALID, code: " p-0101 " }).code).toBe(
+      "P-0101",
+    );
+  });
+
+  it.each(["名前\n2行目", "名前\r2行目", "タブ\t入り", "\u0000"])(
+    "1 行で入力する項目に改行・制御文字（%j）があるとエラー",
+    (name) => {
+      expect(errorsOf({ name }).name).toEqual([
+        "商品名に改行・タブなどの制御文字は使えません",
+      ]);
+    },
+  );
+
   it("文字数の上限", () => {
     expect(errorsOf({ code: "P".repeat(21) }).code).toEqual([
       "商品コードは20文字以内で入力してください",
