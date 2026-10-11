@@ -15,6 +15,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Prisma Client の生成物（pnpm db:generate で作る）
+    "src/generated/**",
   ]),
 ]);
 

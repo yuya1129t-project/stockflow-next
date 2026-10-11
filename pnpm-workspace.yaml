@@ -1,3 +1,8 @@
 allowBuilds:
   sharp: false
   unrs-resolver: false
+  # tsx が使う esbuild はプラットフォーム別バイナリが optionalDependencies で入るため postinstall 不要
+  esbuild: false
+  # Prisma のマイグレーション用エンジン（schema-engine）の取得に必要
+  "@prisma/engines": true
+  prisma: true

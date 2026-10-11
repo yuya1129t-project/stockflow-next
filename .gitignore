@@ -34,3 +34,6 @@ next-env.d.ts
 *.tsbuildinfo
 .vercel
 .pnpm-debug.log*
+
+# Prisma Client の生成物（pnpm install 時の postinstall / pnpm db:generate で作る）
+/src/generated/prisma
