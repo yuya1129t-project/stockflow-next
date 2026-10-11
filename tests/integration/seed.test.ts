@@ -8,7 +8,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { calcTax } from "@/lib/tax";
 
-import { DEMO_PASSWORD, toJstDateString } from "../../prisma/seed-data";
+import { APP_TABLES } from "../../prisma/app-tables";
+import { DEMO_PASSWORD } from "../../prisma/seed-data";
 import { connectTestDb, SETUP_HINT } from "./test-db";
 
 let prisma: PrismaClient;
@@ -28,6 +29,17 @@ afterAll(async () => {
 function lineKeys(lines: { productId: number; quantity: number }[]): string[] {
   return lines.map((l) => `${l.productId}:${l.quantity}`).sort();
 }
+
+describe("スキーマ", () => {
+  it("シードが空にするテーブルの一覧（prisma/app-tables.ts）が、マイグレーション後のテーブルと一致する", async () => {
+    const tables = await prisma.$queryRaw<{ tablename: string }[]>`
+      SELECT tablename FROM pg_tables
+      WHERE schemaname = current_schema() AND tablename <> '_prisma_migrations'`;
+    expect(tables.map((t) => t.tablename).sort()).toEqual(
+      [...APP_TABLES].sort(),
+    );
+  });
+});
 
 describe("シードの件数", () => {
   it("商品 50・取引先 20（顧客 12・仕入先 8）・受注 80・発注 40", async () => {
@@ -165,6 +177,32 @@ describe("受注・発注と入出庫の対応", () => {
     expect(orders.some((o) => o.status === "received")).toBe(true);
     expect(orders.some((o) => o.status === "ordered")).toBe(true);
   });
+
+  it("全入出庫の参照先（refType＋refId）が実在する伝票を指す（孤立参照がない）", async () => {
+    const salesIds = new Set(
+      (await prisma.salesOrder.findMany({ select: { id: true } })).map(
+        (o) => o.id,
+      ),
+    );
+    const purchaseIds = new Set(
+      (await prisma.purchaseOrder.findMany({ select: { id: true } })).map(
+        (o) => o.id,
+      ),
+    );
+    const movements = await prisma.stockMovement.findMany();
+    for (const m of movements) {
+      const where = `入出庫 ${m.id}（${m.type}, ${m.refType}:${m.refId}）`;
+      if (m.type === "out") {
+        expect(m.refType, where).toBe("sales_order");
+        expect(salesIds.has(m.refId!), where).toBe(true);
+      } else if (m.type === "in") {
+        expect(m.refType, where).toBe("purchase_order");
+        expect(purchaseIds.has(m.refId!), where).toBe(true);
+      } else {
+        expect([m.refType, m.refId], where).toEqual([null, null]);
+      }
+    }
+  });
 });
 
 describe("伝票", () => {
@@ -239,13 +277,17 @@ describe("伝票", () => {
     expect(purchases.every((o) => o.supplier.kind !== "customer")).toBe(true);
   });
 
-  it("今月（JST）の確定・出荷済みの受注がある（ダッシュボードの確認用）", async () => {
-    const thisMonth = toJstDateString(new Date()).slice(0, 7);
+  it("シード基準月（最新の受注日の月）に確定・出荷済みの受注がある（ダッシュボードの「今月」の確認用）", async () => {
+    // テストの実行日ではなく DB の最新の受注日（= シード実行日）を基準にし、月をまたいでも落ちないようにする
+    const latest = await prisma.salesOrder.aggregate({
+      _max: { orderDate: true },
+    });
+    const seedMonth = latest._max.orderDate!.toISOString().slice(0, 7);
     const orders = await prisma.salesOrder.findMany({
       where: { status: { in: ["confirmed", "shipped"] } },
     });
     expect(
-      orders.some((o) => o.orderDate.toISOString().startsWith(thisMonth)),
+      orders.some((o) => o.orderDate.toISOString().startsWith(seedMonth)),
     ).toBe(true);
   });
 });
