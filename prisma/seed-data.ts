@@ -191,7 +191,8 @@ function minDate(a: Date, b: Date): Date {
 // マスタ（自作の架空リスト）
 // ---------------------------------------------------------------------------
 
-const USERS: SeedUser[] = [
+/** デモアカウント（admin／staff／viewer）。ログイン画面と README にも同じ値を表示する */
+export const DEMO_USERS: readonly SeedUser[] = [
   {
     id: "demo_admin",
     name: "デモ管理者",
@@ -363,7 +364,7 @@ export function buildSeedData(now: Date): SeedData {
   const today = toJstDateString(now);
   const dayOf = (daysAgo: number) => addDays(today, -daysAgo);
 
-  const [admin, staff] = USERS;
+  const [admin, staff] = DEMO_USERS;
   const partners = buildPartners();
   const customers = partners.filter((p) => p.kind === "customer");
   const suppliers = partners.filter((p) => p.kind === "supplier");
@@ -646,7 +647,7 @@ export function buildSeedData(now: Date): SeedData {
   });
 
   return {
-    users: USERS,
+    users: [...DEMO_USERS],
     partners,
     products,
     salesOrders: plannedSales.map((s) => s.order),
