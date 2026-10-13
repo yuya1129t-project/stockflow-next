@@ -10,6 +10,8 @@
  */
 import { z } from "zod";
 
+import { SINGLE_LINE } from "@/lib/validation/text";
+
 import { normalizePostalCode, PARTNER_LIMITS } from "./schema";
 
 export const ZIPCLOUD_ENDPOINT = "https://zipcloud.ibsnet.co.jp/api/search";
@@ -37,8 +39,6 @@ export type AddressLookupResult =
       addresses: string[];
     }
   | { ok: false; reason: AddressLookupFailure };
-
-const SINGLE_LINE = /^[^\u0000-\u001f\u007f]*$/;
 
 const addressPart = z.string().max(PARTNER_LIMITS.address).regex(SINGLE_LINE);
 

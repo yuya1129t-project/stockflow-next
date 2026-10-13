@@ -107,6 +107,28 @@ describe("productInputSchema", () => {
     },
   );
 
+  it.each([
+    "名前\u2028次の行",
+    "名前\u2029次の段落",
+    "名前\u202e反転",
+    "名前\u2066隔離",
+    "名前\u200f方向",
+    "名\ufeff前",
+    "名前\u0085次",
+    "名前\u009f",
+  ])("行区切り・表示方向の制御・BOM・C1 制御（%j）もエラー", (name) => {
+    for (const field of ["name", "category", "unit"] as const) {
+      expect(errorsOf({ [field]: name })[field]).toEqual([
+        `${field === "name" ? "商品名" : field === "category" ? "カテゴリ" : "単位"}に改行・タブなどの制御文字は使えません`,
+      ]);
+    }
+  });
+
+  it("日本語・記号・絵文字は通る", () => {
+    const name = "ペン（黒）#1 〜限定〜 😀";
+    expect(productInputSchema.parse({ ...VALID, name }).name).toBe(name);
+  });
+
   it("文字数の上限", () => {
     expect(errorsOf({ code: "P".repeat(21) }).code).toEqual([
       "商品コードは20文字以内で入力してください",

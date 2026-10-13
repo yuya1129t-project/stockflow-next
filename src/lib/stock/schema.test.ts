@@ -78,6 +78,9 @@ describe("stockAdjustSchema（棚卸調整の入力）", () => {
     expect(errorsOf({ reason: "破損\n廃棄" }).reason).toEqual([
       "理由に改行・タブなどの制御文字は使えません",
     ]);
+    expect(errorsOf({ reason: "破損\u2028廃棄" }).reason).toEqual([
+      "理由に改行・タブなどの制御文字は使えません",
+    ]);
   });
 
   it("文字列以外は受け付けない", () => {
