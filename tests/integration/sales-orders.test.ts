@@ -120,11 +120,21 @@ async function syncSoSequences() {
       AND ds."lastNumber" <> m."last"`;
 }
 
+/** 出荷の操作履歴を失敗させるためにテストの中だけで足す CHECK 制約（中断した実行の後でも残らないよう、開始・終了時にも外す） */
+const REJECT_SHIP_AUDIT = "zs_reject_ship_audit";
+
+async function dropRejectShipAudit() {
+  await prisma.$executeRawUnsafe(
+    `ALTER TABLE "audit_log" DROP CONSTRAINT IF EXISTS "${REJECT_SHIP_AUDIT}"`,
+  );
+}
+
 beforeAll(async () => {
   prisma = await connectTestDb();
   if ((await prisma.product.count()) === 0) {
     throw new Error(`テスト用 DB にシードが入っていません。${SETUP_HINT}`);
   }
+  await dropRejectShipAudit();
   await cleanUp();
   await syncSoSequences();
 });
@@ -132,6 +142,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!prisma) return;
   try {
+    await dropRejectShipAudit();
     await cleanUp();
     await syncSoSequences();
   } finally {
@@ -1063,19 +1074,39 @@ describe("ステータス遷移", () => {
     expect(await getStock(prisma, product.id)).toBe(5);
   });
 
-  it("途中で失敗したら全体が取り消される（存在しないユーザーで入出庫・操作履歴の外部キー違反）", async () => {
+  it("確定の操作履歴の保存に失敗したら、状態の変更も取り消される（存在しないユーザーで操作履歴の外部キー違反）", async () => {
     const customer = await createPartner();
     const product = await createProduct({ stock: 5 });
     const { id } = await createOk(customer.id, [[product.id, 5, 10]]);
     await expect(changeStatus(MISSING_USER, id, "confirmed")).rejects.toThrow();
     expect((await getSalesOrder(prisma, id))!.status).toBe("draft");
+    expect(await auditLogsOf(id)).toHaveLength(1);
+  });
 
-    await statusOk(id, "confirmed");
-    await expect(changeStatus(MISSING_USER, id, "shipped")).rejects.toThrow();
+  it("出荷の操作履歴の保存に失敗したら、状態・在庫・入出庫もすべて取り消される", async () => {
+    const customer = await createPartner();
+    const product = await createProduct({ stock: 5 });
+    const { id, number } = await createConfirmed(customer.id, [
+      [product.id, 5, 10],
+    ]);
+    // 入出庫の書き込みは通し、操作履歴の書き込みだけを失敗させる（この受注の出荷の summary を拒否する CHECK 制約）
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE "audit_log" ADD CONSTRAINT "${REJECT_SHIP_AUDIT}" CHECK ("summary" NOT LIKE '受注 ${number} %出荷済%') NOT VALID`,
+    );
+    try {
+      await expect(changeStatus(STAFF, id, "shipped")).rejects.toThrow(
+        REJECT_SHIP_AUDIT,
+      );
+    } finally {
+      await dropRejectShipAudit();
+    }
     expect((await getSalesOrder(prisma, id))!.status).toBe("confirmed");
     expect(await getStock(prisma, product.id)).toBe(5);
     expect(await shipmentsOf(id)).toEqual([]);
     expect(await auditLogsOf(id)).toHaveLength(2);
+    // 制約を外せば出荷できる（失敗の原因が操作履歴だけだったこと）
+    expect((await changeStatus(STAFF, id, "shipped")).ok).toBe(true);
+    expect(await getStock(prisma, product.id)).toBe(0);
   });
 });
 
@@ -1231,6 +1262,46 @@ describe("出荷の同時実行", () => {
       "confirmed",
     );
     expect(await shipmentsOf(orders[loser])).toEqual([]);
+  });
+
+  it("明細の順番が逆の 2 つの受注を同時に出荷してもデッドロックしない（全明細を一度に渡し、商品のロックは id 順）", async () => {
+    const customer = await createPartner();
+    const p1 = await createProduct({ stock: 10 });
+    const p2 = await createProduct({ stock: 10 });
+    const [low, high] = p1.id < p2.id ? [p1, p2] : [p2, p1];
+    const a = await createConfirmed(customer.id, [
+      [low.id, 1, 100],
+      [high.id, 2, 100],
+    ]);
+    const b = await createConfirmed(customer.id, [
+      [high.id, 3, 100],
+      [low.id, 4, 100],
+    ]);
+    const versions = [await versionOf(a.id), await versionOf(b.id)];
+
+    // id の大きい商品を別のトランザクションでロックしておく。B（明細は大→小の順）を先にロック待ちにしてから A を始める
+    // （明細ごとに記録すると、B は大きい商品、A は小さい商品を先に取って互いに待ち、デッドロックになる）
+    const holder = await hold(
+      (tx) =>
+        tx.$queryRaw`SELECT "id" FROM "product" WHERE "id" = ${high.id} FOR NO KEY UPDATE`,
+    );
+    const shipB = settle(changeStatus(STAFF, b.id, "shipped", versions[1]));
+    await waitUntil(
+      "B の出荷が商品の行のロック待ち",
+      async () => (await sessionsBlockedBy(holder.pid)) >= 1,
+    );
+    const shipA = settle(changeStatus(STAFF, a.id, "shipped", versions[0]));
+    await waitUntil(
+      "A の出荷もロック待ち",
+      async () => (await blockedSessionCount()) >= 2,
+    );
+    await holder.release();
+
+    const [shippedA, shippedB] = await Promise.all([shipA, shipB]);
+    expect(shippedA.ok && shippedA.value.ok).toBe(true);
+    expect(shippedB.ok && shippedB.value.ok).toBe(true);
+    expect(await getStock(prisma, low.id)).toBe(5);
+    expect(await getStock(prisma, high.id)).toBe(5);
   });
 
   it("出荷と取消が同時でも、先に確定した出荷だけが通り、在庫は 1 回だけ減る", async () => {

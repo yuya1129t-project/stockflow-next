@@ -135,7 +135,7 @@ export default async function SalesOrdersPage({
             name="q"
             type="search"
             defaultValue={params.q}
-            placeholder="例 PO-20261013"
+            placeholder="例 SO-20261013"
           />
         </div>
         <div className="grid w-full gap-1 sm:w-auto">
