@@ -27,6 +27,7 @@ console.log(`テスト用 DB: ${formatDbTarget(guard.target)}`);
 const result = spawnSync(command, args, {
   stdio: "inherit",
   shell: process.platform === "win32",
-  env: { ...process.env, DATABASE_URL: testUrl },
+  // Prisma CLI は DIRECT_URL を優先する（prisma.config.ts）ので、DIRECT_URL もテスト用 DB に向ける
+  env: { ...process.env, DATABASE_URL: testUrl, DIRECT_URL: testUrl },
 });
 process.exit(result.status ?? 1);
