@@ -3,17 +3,19 @@
  * 前提: pnpm db:test:reset でテスト用 DB にマイグレーションとシードを適用済み
  *
  * シードの商品と入出庫は書き換えない。このファイル専用の商品（コードが ZS- で始まる）を作って使い、
- * 終了時に 入出庫 → 操作履歴 → 商品 の順で削除する（入出庫は商品を Restrict で参照しているため）
+ * 終了時に 受注（ZS- の番号）→ 入出庫 → 操作履歴 → 商品 の順で削除する（明細・入出庫は商品を Restrict で参照しているため）
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import type { SessionUser } from "@/lib/auth/session";
 import { PRODUCT_TARGET_TYPE } from "@/lib/products/service";
 import {
   getStock,
   getStocks,
+  lockProductsForStock,
   recordStockMovements,
+  withStockTransaction,
 } from "@/lib/stock/movements";
 import {
   listStock,
@@ -44,6 +46,10 @@ async function cleanUp() {
       select: { id: true },
     })
   ).map((p) => p.id);
+  // 明細は商品を Restrict で参照するので、受注（明細は Cascade）を先に消す
+  await prisma.salesOrder.deleteMany({
+    where: { number: { startsWith: PREFIX } },
+  });
   await prisma.stockMovement.deleteMany({ where: { productId: { in: ids } } });
   await prisma.auditLog.deleteMany({
     where: {
@@ -125,6 +131,84 @@ function out(productId: number, quantity: number) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 同時実行のテストのトランザクションの timeout（ロック待ちを含む） */
+const TX_TIMEOUT = 20_000;
+/** DB の状態を待つ上限（これを過ぎたら失敗。固定時間の経過を競合の証拠にはしない） */
+const WAIT_LIMIT_MS = 10_000;
+
+async function backendPid(tx: Prisma.TransactionClient): Promise<number> {
+  const [row] = await tx.$queryRaw<{ pid: number }[]>`
+    SELECT pg_backend_pid() AS "pid"`;
+  return row.pid;
+}
+
+/** 観測用の接続から: pid のセッションが blocker のロックの解放を待っているか */
+async function isBlockedBy(pid: number, blocker: number): Promise<boolean> {
+  const [row] = await prisma.$queryRaw<{ blocked: boolean }[]>`
+    SELECT ${blocker}::int = ANY(pg_blocking_pids(${pid}::int)) AS "blocked"`;
+  return row.blocked;
+}
+
+/** 観測用の接続から: このテスト用 DB でロック待ちになっているセッションの数 */
+async function blockedSessionCount(): Promise<number> {
+  const [row] = await prisma.$queryRaw<{ count: number }[]>`
+    SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
+    WHERE "datname" = current_database()
+      AND cardinality(pg_blocking_pids("pid")) > 0`;
+  return row.count;
+}
+
+/** 条件が成り立つまで待つ（上限を過ぎたら失敗） */
+async function waitUntil(label: string, condition: () => Promise<boolean>) {
+  const deadline = Date.now() + WAIT_LIMIT_MS;
+  while (!(await condition())) {
+    if (Date.now() > deadline) {
+      throw new Error(`「${label}」の状態になりませんでした`);
+    }
+    await sleep(20);
+  }
+}
+
+/** 2 つの条件のどちらが先に成り立つか（上限を過ぎたら失敗） */
+async function waitForEither(
+  first: () => boolean,
+  second: () => Promise<boolean>,
+): Promise<"first" | "second"> {
+  const deadline = Date.now() + WAIT_LIMIT_MS;
+  for (;;) {
+    if (first()) return "first";
+    if (await second()) return "second";
+    if (Date.now() > deadline)
+      throw new Error("どちらの状態にもなりませんでした");
+    await sleep(20);
+  }
+}
+
+/** 商品の行ロックを別のトランザクションで持ち続ける（release で確定して解放） */
+async function holdLock(productIds: number[]) {
+  const locked = deferred();
+  const release = deferred();
+  const done = settle(
+    withStockTransaction(
+      prisma,
+      async (tx) => {
+        await lockProductsForStock(tx, productIds);
+        locked.resolve();
+        await release.promise;
+      },
+      { timeout: TX_TIMEOUT },
+    ),
+  );
+  await locked.promise;
+  return {
+    async release() {
+      release.resolve();
+      const result = await done;
+      if (!result.ok) throw result.error;
+    },
+  };
 }
 
 function deferred() {
@@ -221,7 +305,7 @@ describe("入出庫の記録（共通モジュール）", () => {
   it("複数商品をまとめて記録し、前後の在庫を返す", async () => {
     const a = await createProduct({ stock: 10 });
     const b = await createProduct({ stock: 3 });
-    const result = await prisma.$transaction((tx) =>
+    const result = await withStockTransaction(prisma, (tx) =>
       recordStockMovements(tx, STAFF.id, [
         out(a.id, 4),
         { productId: b.id, type: "in", quantity: 7, reason: "入荷" },
@@ -249,16 +333,14 @@ describe("入出庫の記録（共通モジュール）", () => {
   it("1 商品でも不足すれば例外で全体を中止し、同じトランザクションのほかの書き込みも取り消される", async () => {
     const a = await createProduct({ stock: 10 });
     const b = await createProduct({ stock: 2 });
-    const error = await prisma
-      .$transaction(async (tx) => {
-        // 受注のステータス更新などに相当する先行の書き込み
-        await tx.product.update({
-          where: { id: a.id },
-          data: { name: "書き換え（取り消されるはず）" },
-        });
-        await recordStockMovements(tx, STAFF.id, [out(a.id, 3), out(b.id, 5)]);
-      })
-      .catch((e: unknown) => e);
+    const error = await withStockTransaction(prisma, async (tx) => {
+      // 受注のステータス更新などに相当する先行の書き込み
+      await tx.product.update({
+        where: { id: a.id },
+        data: { name: "書き換え（取り消されるはず）" },
+      });
+      await recordStockMovements(tx, STAFF.id, [out(a.id, 3), out(b.id, 5)]);
+    }).catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(InsufficientStockError);
     expect((error as InsufficientStockError).shortages).toEqual([
@@ -282,18 +364,60 @@ describe("入出庫の記録（共通モジュール）", () => {
   it("数量の符号が種別に合わない・存在しない商品はプログラムの誤りとして例外（何も記録しない）", async () => {
     const a = await createProduct({ stock: 10 });
     await expect(
-      prisma.$transaction((tx) =>
+      withStockTransaction(prisma, (tx) =>
         recordStockMovements(tx, STAFF.id, [
           { productId: a.id, type: "out", quantity: 3 },
         ]),
       ),
     ).rejects.toThrow("種別");
     await expect(
-      prisma.$transaction((tx) =>
+      withStockTransaction(prisma, (tx) =>
         recordStockMovements(tx, STAFF.id, [out(a.id, 1), out(999_999_999, 1)]),
       ),
     ).rejects.toThrow("商品が見つかりません");
+    // refType と refId は両方そろえる（片方だけは DB の CHECK 制約の前に例外）
+    await expect(
+      withStockTransaction(prisma, (tx) =>
+        recordStockMovements(tx, STAFF.id, [
+          { ...out(a.id, 1), refType: "sales_order" },
+        ]),
+      ),
+    ).rejects.toThrow("refType と refId");
+    await expect(
+      withStockTransaction(prisma, (tx) =>
+        recordStockMovements(tx, STAFF.id, [{ ...out(a.id, 1), refId: 1 }]),
+      ),
+    ).rejects.toThrow("refType と refId");
     expect(await getStock(prisma, a.id)).toBe(10);
+  });
+
+  it("トランザクションの外（通常の PrismaClient など）からは記録できない（型と実行時の両方で拒否）", async () => {
+    const a = await createProduct({ stock: 5 });
+    const entries = [out(a.id, 1)];
+    await expect(
+      // @ts-expect-error 通常の PrismaClient は StockTransaction ではない
+      recordStockMovements(prisma, STAFF.id, entries),
+    ).rejects.toThrow("withStockTransaction");
+    await expect(
+      // @ts-expect-error 通常の PrismaClient は StockTransaction ではない
+      lockProductsForStock(prisma, [a.id]),
+    ).rejects.toThrow("withStockTransaction");
+    // withStockTransaction を通さない $transaction の tx も受け付けない
+    await expect(
+      prisma.$transaction((tx) =>
+        // @ts-expect-error Prisma の TransactionClient は StockTransaction ではない
+        recordStockMovements(tx, STAFF.id, entries),
+      ),
+    ).rejects.toThrow("withStockTransaction");
+    // 終わったトランザクションの tx を持ち出して使うこともできない
+    let escaped: Parameters<typeof recordStockMovements>[0] | undefined;
+    await withStockTransaction(prisma, async (tx) => {
+      escaped = tx;
+    });
+    await expect(
+      recordStockMovements(escaped!, STAFF.id, entries),
+    ).rejects.toThrow("withStockTransaction");
+    expect(await getStock(prisma, a.id)).toBe(5);
   });
 
   it("発注点以上 → 発注点未満に変わった商品を返す（もともと割れている商品・無効な商品は含めない）", async () => {
@@ -305,7 +429,7 @@ describe("入出庫の記録（共通モジュール）", () => {
       reorderPoint: 5,
       isActive: false,
     });
-    const result = await prisma.$transaction((tx) =>
+    const result = await withStockTransaction(prisma, (tx) =>
       recordStockMovements(tx, STAFF.id, [
         out(crossing.id, 2),
         out(alreadyLow.id, 1),
@@ -326,7 +450,7 @@ describe("入出庫の記録（共通モジュール）", () => {
     ]);
 
     // もう一度減らしても、すでに割れているので含めない
-    const again = await prisma.$transaction((tx) =>
+    const again = await withStockTransaction(prisma, (tx) =>
       recordStockMovements(tx, STAFF.id, [out(crossing.id, 1)]),
     );
     expect(again.fellBelowReorderPoint).toEqual([]);
@@ -338,29 +462,43 @@ describe("同時実行（商品の行ロック）", () => {
     const product = await createProduct({ stock: 5 });
     const firstRecorded = deferred();
     const releaseFirst = deferred();
+    let firstPid = 0;
+    let secondPid = 0;
 
     // 1 つ目: 出庫を記録した後、確定（COMMIT）を待たせてロックを持ち続ける
     const first = settle(
-      prisma.$transaction(async (tx) => {
-        await recordStockMovements(tx, STAFF.id, [out(product.id, 3)]);
-        firstRecorded.resolve();
-        await releaseFirst.promise;
-      }),
+      withStockTransaction(
+        prisma,
+        async (tx) => {
+          firstPid = await backendPid(tx);
+          await recordStockMovements(tx, STAFF.id, [out(product.id, 3)]);
+          firstRecorded.resolve();
+          await releaseFirst.promise;
+        },
+        { timeout: TX_TIMEOUT },
+      ),
     );
     await firstRecorded.promise;
 
     // 2 つ目: 1 つ目が未確定のうちに開始する。ロックがなければ在庫 5 を読んで通ってしまう
+    const secondStarted = deferred();
     const second = settle(
-      prisma.$transaction((tx) =>
-        recordStockMovements(tx, STAFF.id, [out(product.id, 3)]),
+      withStockTransaction(
+        prisma,
+        async (tx) => {
+          secondPid = await backendPid(tx);
+          secondStarted.resolve();
+          return recordStockMovements(tx, STAFF.id, [out(product.id, 3)]);
+        },
+        { timeout: TX_TIMEOUT },
       ),
     );
-    // 1 つ目がロックを持っている間は、2 つ目は行ロックの順番待ちで終わらない
-    const state = await Promise.race([
-      second.then(() => "finished"),
-      sleep(500).then(() => "waiting"),
-    ]);
-    expect(state).toBe("waiting");
+    await secondStarted.promise;
+    expect(secondPid).not.toBe(firstPid);
+    // 2 つ目が 1 つ目のロックの解放を待つ状態に入ったことを DB で確かめてから、1 つ目を確定させる
+    await waitUntil("2 つ目が 1 つ目のロックを待つ", () =>
+      isBlockedBy(secondPid, firstPid),
+    );
 
     releaseFirst.resolve();
     expect((await first).ok).toBe(true);
@@ -372,21 +510,29 @@ describe("同時実行（商品の行ロック）", () => {
     expect(await getStock(prisma, product.id)).toBe(2);
   });
 
-  it("同時に 5 件出庫しても、在庫の範囲で成功した分だけ記録される", async () => {
+  it("5 件の出庫がロックの順番待ちになっても、在庫の範囲で成功した分だけ記録される", async () => {
     const product = await createProduct({ stock: 5 });
-    const results = await Promise.all(
-      Array.from({ length: 5 }, () =>
-        settle(
-          prisma.$transaction((tx) =>
-            recordStockMovements(tx, STAFF.id, [out(product.id, 2)]),
-          ),
+    const holder = await holdLock([product.id]);
+    const results = Array.from({ length: 5 }, () =>
+      settle(
+        withStockTransaction(
+          prisma,
+          (tx) => recordStockMovements(tx, STAFF.id, [out(product.id, 2)]),
+          { timeout: TX_TIMEOUT },
         ),
       ),
     );
-    const succeeded = results.filter((r) => r.ok).length;
-    expect(succeeded).toBe(2);
+    // 5 件すべてがロック待ちに入ってから解放する（後ろの 4 件は前の待ちの後ろに並ぶ）
+    await waitUntil(
+      "5 件がロック待ち",
+      async () => (await blockedSessionCount()) >= 5,
+    );
+    await holder.release();
+
+    const settled = await Promise.all(results);
+    expect(settled.filter((r) => r.ok)).toHaveLength(2);
     expect(
-      results
+      settled
         .filter((r) => !r.ok)
         .every((r) => !r.ok && r.error instanceof InsufficientStockError),
     ).toBe(true);
@@ -396,24 +542,140 @@ describe("同時実行（商品の行ロック）", () => {
   it("複数商品を逆の順番で同時に記録してもデッドロックしない（ロックは id 順）", async () => {
     const a = await createProduct({ stock: 100 });
     const b = await createProduct({ stock: 100 });
-    const results = await Promise.all(
-      Array.from({ length: 6 }, (_, i) =>
-        settle(
-          prisma.$transaction((tx) =>
-            recordStockMovements(
-              tx,
-              STAFF.id,
-              i % 2 === 0
-                ? [out(a.id, 1), out(b.id, 1)]
-                : [out(b.id, 1), out(a.id, 1)],
-            ),
-          ),
-        ),
+    const [low, high] = a.id < b.id ? [a, b] : [b, a];
+    const firstLocked = deferred();
+    const continueFirst = deferred();
+    let firstPid = 0;
+    let secondPid = 0;
+
+    // 1 つ目: id の小さい商品だけをロックした状態で止める
+    const first = settle(
+      withStockTransaction(
+        prisma,
+        async (tx) => {
+          firstPid = await backendPid(tx);
+          await lockProductsForStock(tx, [low.id]);
+          firstLocked.resolve();
+          await continueFirst.promise;
+          // id 順を守ったまま、大きい商品も含めて記録する
+          return recordStockMovements(tx, STAFF.id, [
+            out(low.id, 1),
+            out(high.id, 1),
+          ]);
+        },
+        { timeout: TX_TIMEOUT },
       ),
     );
-    expect(results.every((r) => r.ok)).toBe(true);
-    expect(await getStock(prisma, a.id)).toBe(94);
-    expect(await getStock(prisma, b.id)).toBe(94);
+    await firstLocked.promise;
+
+    // 2 つ目: 逆の順番（大きい id → 小さい id）で渡す。id 順にロックするので、小さい商品の待ちに入り、
+    // 大きい商品はロックしていない（渡した順にロックすると、ここで大きい商品を持ったまま待ち、デッドロックになる）
+    const secondStarted = deferred();
+    const second = settle(
+      withStockTransaction(
+        prisma,
+        async (tx) => {
+          secondPid = await backendPid(tx);
+          secondStarted.resolve();
+          return recordStockMovements(tx, STAFF.id, [
+            out(high.id, 1),
+            out(low.id, 1),
+          ]);
+        },
+        { timeout: TX_TIMEOUT },
+      ),
+    );
+    await secondStarted.promise;
+    expect(secondPid).not.toBe(firstPid);
+    await waitUntil("2 つ目が 1 つ目のロックを待つ", () =>
+      isBlockedBy(secondPid, firstPid),
+    );
+
+    continueFirst.resolve();
+    const [r1, r2] = await Promise.all([first, second]);
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    expect(await getStock(prisma, a.id)).toBe(98);
+    expect(await getStock(prisma, b.id)).toBe(98);
+  });
+
+  it("受注明細の INSERT（外部キー検査）と在庫の記録が逆の順番で交差してもデッドロックしない（FOR NO KEY UPDATE）", async () => {
+    const a = await createProduct({ stock: 10 });
+    const b = await createProduct({ stock: 10 });
+    const [low, high] = a.id < b.id ? [a, b] : [b, a];
+    const customer = await prisma.partner.findFirstOrThrow({
+      where: { kind: { in: ["customer", "both"] } },
+      orderBy: { id: "asc" },
+    });
+    const orderInserted = deferred();
+    const insertSecondLine = deferred();
+    let orderPid = 0;
+    let stockPid = 0;
+    let stockRecorded = false;
+    const releaseStock = deferred();
+
+    // A: 受注の明細を入力の順番（大きい id → 小さい id）で INSERT する
+    const order = settle(
+      prisma.$transaction(
+        async (tx) => {
+          orderPid = await backendPid(tx);
+          const created = await tx.salesOrder.create({
+            data: {
+              number: `${PREFIX}SO-${Date.now()}`,
+              customerId: customer.id,
+              orderDate: new Date(),
+              lines: {
+                create: [{ productId: high.id, quantity: 1, unitPrice: 100 }],
+              },
+            },
+          });
+          orderInserted.resolve();
+          await insertSecondLine.promise;
+          await tx.salesOrderLine.create({
+            data: {
+              salesOrderId: created.id,
+              productId: low.id,
+              quantity: 1,
+              unitPrice: 100,
+            },
+          });
+        },
+        { timeout: TX_TIMEOUT },
+      ),
+    );
+    await orderInserted.promise;
+
+    // B: 在庫の記録（両商品を id 順にロック）。A が大きい id の商品に FOR KEY SHARE を持っている
+    const stock = settle(
+      withStockTransaction(
+        prisma,
+        async (tx) => {
+          stockPid = await backendPid(tx);
+          await recordStockMovements(tx, STAFF.id, [
+            out(low.id, 1),
+            out(high.id, 1),
+          ]);
+          stockRecorded = true;
+          await releaseStock.promise;
+        },
+        { timeout: TX_TIMEOUT },
+      ),
+    );
+    // FOR KEY SHARE と競合しないので、B は A を待たずに記録まで進む（FOR UPDATE だとここで A を待つ）
+    const state = await waitForEither(
+      () => stockRecorded,
+      async () => stockPid !== 0 && (await isBlockedBy(stockPid, orderPid)),
+    );
+    expect(state).toBe("first");
+
+    // A: B がロックを持ったまま、小さい id の商品の明細を INSERT できる
+    insertSecondLine.resolve();
+    const orderResult = await order;
+    expect(orderResult.ok).toBe(true);
+    releaseStock.resolve();
+    expect((await stock).ok).toBe(true);
+    expect(await getStock(prisma, low.id)).toBe(9);
+    expect(await getStock(prisma, high.id)).toBe(9);
   });
 });
 
@@ -548,19 +810,39 @@ describe("棚卸調整", () => {
 
   it("同時に調整しても、記録後の在庫は後から確定した実数になる（差分はロック後の現在庫から求める）", async () => {
     const product = await createProduct({ stock: 10 });
-    const [r1, r2] = await Promise.all([
+    const holder = await holdLock([product.id]);
+    const first = settle(
       adjustStock(prisma, STAFF, product.id, {
         actualQuantity: "8",
         reason: "棚卸 A",
       }),
+    );
+    await waitUntil(
+      "1 つ目の調整がロック待ち",
+      async () => (await blockedSessionCount()) >= 1,
+    );
+    const second = settle(
       adjustStock(prisma, ADMIN, product.id, {
         actualQuantity: "3",
         reason: "棚卸 B",
       }),
-    ]);
-    expect(r1.ok && r2.ok).toBe(true);
-    const last = (await movementsOf(product.id)).at(-1)!;
-    const expected = last.reason === "棚卸 A" ? 8 : 3;
+    );
+    // 2 つの調整が両方ともロック待ちに入ってから解放する（どちらも在庫 10 を読んでいない）
+    await waitUntil(
+      "2 つの調整がロック待ち",
+      async () => (await blockedSessionCount()) >= 2,
+    );
+    await holder.release();
+
+    const [r1, r2] = await Promise.all([first, second]);
+    expect(r1.ok && r1.value.ok).toBe(true);
+    expect(r2.ok && r2.value.ok).toBe(true);
+    const adjustments = (await movementsOf(product.id)).slice(1);
+    // 後から記録したほうの差分は、先の調整を反映した在庫から求めている
+    expect(adjustments.map((m) => m.quantity)).toEqual(
+      adjustments[0].reason === "棚卸 A" ? [-2, -5] : [-7, 5],
+    );
+    const expected = adjustments.at(-1)!.reason === "棚卸 A" ? 8 : 3;
     expect(await getStock(prisma, product.id)).toBe(expected);
   });
 });
@@ -571,7 +853,7 @@ describe("入出庫履歴", () => {
     const order = await prisma.purchaseOrder.findFirstOrThrow({
       where: { status: "received" },
     });
-    await prisma.$transaction((tx) =>
+    await withStockTransaction(prisma, (tx) =>
       recordStockMovements(tx, STAFF.id, [
         {
           productId: product.id,
@@ -584,7 +866,7 @@ describe("入出庫履歴", () => {
       ]),
     );
     for (let i = 0; i < STOCK_MOVEMENTS_PER_PAGE + 2; i++) {
-      await prisma.$transaction((tx) =>
+      await withStockTransaction(prisma, (tx) =>
         recordStockMovements(tx, STAFF.id, [out(product.id, 1)]),
       );
     }

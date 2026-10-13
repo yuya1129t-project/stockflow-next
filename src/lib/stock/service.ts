@@ -14,7 +14,11 @@ import {
 import { formatNumber, formatSignedNumber } from "@/lib/format";
 import { PRODUCT_TARGET_TYPE } from "@/lib/products/service";
 
-import { lockProductsForStock, recordStockMovements } from "./movements";
+import {
+  lockProductsForStock,
+  recordStockMovements,
+  withStockTransaction,
+} from "./movements";
 import { adjustmentDelta, type ReorderPointCrossing } from "./rules";
 import {
   stockAdjustFieldErrors,
@@ -65,7 +69,7 @@ export async function adjustStock(
   }
   const { actualQuantity, reason } = parsed.data;
 
-  return db.$transaction(async (tx) => {
+  return withStockTransaction(db, async (tx) => {
     const [product] = await lockProductsForStock(tx, [productId]);
     if (!product) {
       return { ok: false as const, error: "商品が見つかりません" };
