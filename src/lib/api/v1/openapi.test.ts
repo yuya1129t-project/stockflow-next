@@ -16,7 +16,10 @@ import { describe, expect, it } from "vitest";
 
 import { GET as getOpenApiJson } from "@/app/api/v1/openapi.json/route";
 
+import { parseDateOnly } from "@/lib/orders/dates";
+
 import { buildOpenApiDocument, serializeOpenApiDocument } from "./openapi";
+import { API_DATE_PATTERN } from "./schemas";
 
 type JsonObject = Record<string, unknown>;
 
@@ -62,7 +65,8 @@ describe("OpenAPI の定義", () => {
         const source = readFileSync(file, "utf8");
         return [
           ...source.matchAll(
-            /export (?:const|function|async function) (GET|POST|PUT|PATCH|DELETE)\b/g,
+            // 405 を返すだけのメソッド（methodNotAllowed）は数えない
+            /export (?:const|function|async function) (GET|POST|PUT|PATCH|DELETE)\b(?! = methodNotAllowed\()/g,
           ),
         ].map((m) => `${m[1].toLowerCase()} ${path}`);
       })
@@ -73,6 +77,66 @@ describe("OpenAPI の定義", () => {
       )
       .sort();
     expect(implemented).toEqual(documented);
+  });
+
+  it("定義したパスに定義していないメソッドを送ると、405（RFC 9457）と、定義したメソッドの Allow を返す。OPTIONS も同じ Allow", async () => {
+    for (const file of routeFiles(API_DIR).filter((f) => !f.includes("[..."))) {
+      const segments = relative(API_DIR, file).split("/").slice(0, -1);
+      const path = `/api/v1/${segments
+        .map((s) => s.replace(/^\[(\w+)\]$/, "{$1}"))
+        .join("/")}`;
+      const allowed = Object.keys(doc.paths[path]).map((m) => m.toUpperCase());
+      const route = (await import(/* @vite-ignore */ file)) as Record<
+        string,
+        unknown
+      >;
+      // GET があれば Next.js が自動で応じる HEAD と、OPTIONS も Allow に含める
+      const allow = [
+        ...allowed,
+        ...(allowed.includes("GET") ? ["HEAD"] : []),
+        "OPTIONS",
+      ].join(", ");
+      const options = (route.OPTIONS as () => Response)();
+      expect(options.status, `OPTIONS ${path}`).toBe(204);
+      expect(options.headers.get("allow"), `OPTIONS ${path}`).toBe(allow);
+      for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) {
+        if (allowed.includes(method)) continue;
+        const handler = route[method] as (() => Response) | undefined;
+        expect(handler, `${method} ${path}`).toBeTypeOf("function");
+        const response = handler!();
+        expect(response.status, `${method} ${path}`).toBe(405);
+        expect(response.headers.get("allow")).toBe(allow);
+        expect(response.headers.get("content-type")).toBe(
+          "application/problem+json",
+        );
+        expect(await response.json()).toMatchObject({
+          type: "about:blank",
+          title: "Method Not Allowed",
+          status: 405,
+        });
+      }
+    }
+  });
+
+  it("日付の pattern は受け付ける範囲（parseDateOnly の 2000〜2099 年）と一致し、日付の項目・パラメーターすべてに付いている", () => {
+    const pattern = new RegExp(API_DATE_PATTERN);
+    for (const ok of ["2000-01-01", "2099-12-31"]) {
+      expect(pattern.test(ok) && parseDateOnly(ok) !== null, ok).toBe(true);
+    }
+    for (const ng of ["1999-12-31", "2100-01-01", "0001-01-01", "9999-12-31"]) {
+      expect(pattern.test(ng), ng).toBe(false);
+      expect(parseDateOnly(ng), ng).toBeNull();
+    }
+    const dates: JsonObject[] = [];
+    JSON.stringify(doc, (_key, value: unknown) => {
+      if ((value as JsonObject | null)?.format === "date") {
+        dates.push(value as JsonObject);
+      }
+      return value;
+    });
+    // 応答の受注日・納期（2 か所ずつ）、登録の納期、一覧の from・to
+    expect(dates).toHaveLength(7);
+    for (const schema of dates) expect(schema.pattern).toBe(API_DATE_PATTERN);
   });
 
   it("認証が必要な操作は 401 を、本文を受け取る操作は 400・413・415 を定義している", () => {

@@ -3,7 +3,7 @@
   "info": {
     "title": "StockFlow API",
     "version": "1.0.0",
-    "description": "StockFlow（受発注・在庫管理のデモ）の外部向け REST API です。データはすべて架空です。\n\n## 認証\n`Authorization: Bearer <token>` でトークンを送ります。トークンは admin がユーザー管理画面（ユーザーの詳細）で発行します（表示は発行時の 1 回のみ）。\n画面のログイン（Cookie）では API を使えません。\n\n## 権限\nトークンの持ち主の現在のロールに従います。参照（GET）は admin／staff／viewer、受注の登録（POST）は admin／staff。\n\n## 形式\n- 一覧は `{ data, meta: { page, perPage, total } }`。perPage は既定 20・上限 100\n- 金額（円）・数量は整数、日付は YYYY-MM-DD、日時は ISO 8601（UTC）\n- 商品・取引先・受注はコード・番号で表します（内部の ID は出しません）\n- エラーは RFC 9457（application/problem+json）。detail は日本語"
+    "description": "StockFlow（受発注・在庫管理のデモ）の外部向け REST API です。データはすべて架空です。\n\n## 認証\n`Authorization: Bearer <token>` でトークンを送ります。トークンは admin がユーザー管理画面（ユーザーの詳細）で発行します（表示は発行時の 1 回のみ）。\n画面のログイン（Cookie）では API を使えません。\n\n## 権限\nトークンの持ち主の現在のロールに従います。参照（GET）は admin／staff／viewer、受注の登録（POST）は admin／staff。\n\n## 形式\n- 一覧は `{ data, meta: { page, perPage, total } }`。perPage は既定 20・上限 100\n- 金額（円）・数量は整数、日付は YYYY-MM-DD、日時は ISO 8601（UTC）\n- 商品・取引先・受注はコード・番号で表します（内部の ID は出しません）\n- 日付のパラメーター・項目は 2000〜2099 年の範囲\n- 文字列（クエリ・パスのパラメーター、本文の項目）に NUL（U+0000）を含むと 400\n- エラーは RFC 9457（application/problem+json）。detail は日本語。定義したパスに定義していないメソッドを送ると 405（Allow ヘッダー付き）"
   },
   "tags": [
     {
@@ -102,6 +102,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -140,19 +143,21 @@
           {
             "name": "from",
             "in": "query",
-            "description": "受注日がこの日以降（YYYY-MM-DD。この日を含む）",
+            "description": "受注日がこの日以降（YYYY-MM-DD。2000〜2099 年。この日を含む）",
             "schema": {
               "type": "string",
-              "format": "date"
+              "format": "date",
+              "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$"
             }
           },
           {
             "name": "to",
             "in": "query",
-            "description": "受注日がこの日以前（YYYY-MM-DD。この日を含む）。from より前は 400",
+            "description": "受注日がこの日以前（YYYY-MM-DD。2000〜2099 年。この日を含む）。from より前は 400",
             "schema": {
               "type": "string",
-              "format": "date"
+              "format": "date",
+              "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$"
             }
           },
           {
@@ -266,6 +271,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
@@ -527,19 +535,21 @@
           "orderDate": {
             "type": "string",
             "format": "date",
-            "description": "受注日（YYYY-MM-DD）"
+            "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$",
+            "description": "受注日（YYYY-MM-DD。2000〜2099 年）"
           },
           "dueDate": {
             "anyOf": [
               {
                 "type": "string",
-                "format": "date"
+                "format": "date",
+                "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "納期（YYYY-MM-DD。未設定は null）"
+            "description": "納期（YYYY-MM-DD。2000〜2099 年。未設定は null）"
           },
           "status": {
             "$ref": "#/components/schemas/SalesOrderStatus"
@@ -658,19 +668,21 @@
           "orderDate": {
             "type": "string",
             "format": "date",
-            "description": "受注日（YYYY-MM-DD）"
+            "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$",
+            "description": "受注日（YYYY-MM-DD。2000〜2099 年）"
           },
           "dueDate": {
             "anyOf": [
               {
                 "type": "string",
-                "format": "date"
+                "format": "date",
+                "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "納期（YYYY-MM-DD。未設定は null）"
+            "description": "納期（YYYY-MM-DD。2000〜2099 年。未設定は null）"
           },
           "status": {
             "$ref": "#/components/schemas/SalesOrderStatus"
@@ -771,11 +783,12 @@
             "description": "顧客の取引先コード（大文字・小文字は区別しない。種別が顧客か顧客・仕入先で、有効なもの）"
           },
           "dueDate": {
-            "description": "納期（YYYY-MM-DD。受注日以降。省略・null は未設定）",
+            "description": "納期（YYYY-MM-DD。2000〜2099 年で、受注日以降。省略・null は未設定）",
             "anyOf": [
               {
                 "type": "string",
-                "format": "date"
+                "format": "date",
+                "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$"
               },
               {
                 "type": "null"

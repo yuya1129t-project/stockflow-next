@@ -572,6 +572,8 @@ describe("GET /api/v1/products", () => {
     ["?page=1000001", "page"],
     ["?page=1&page=2", "page"],
     [`?q=${"a".repeat(101)}`, "q"],
+    // NUL は PostgreSQL に渡すと 500 になる（レビューの再現例 GET /api/v1/products?q=%00）
+    ["?q=%00", "q"],
   ])("不正なクエリ %s は 400（parameter = %s）", async (query, parameter) => {
     const body = await expectProblem(
       "get",
@@ -601,6 +603,18 @@ describe("GET /api/v1/products/{code}/stock", () => {
     }
   });
 
+  it("パスに NUL があれば 400（レビューの再現例 GET /api/v1/products/%00/stock。DB には渡さない）", async () => {
+    const body = await expectProblem(
+      "get",
+      STOCK,
+      await getStock("\u0000", { token: tokens.viewer.token }),
+      400,
+    );
+    expect(body.errors).toEqual([
+      { parameter: "code", detail: "NUL 文字（U+0000）は使えません" },
+    ]);
+  });
+
   it("存在しない商品は 404", async () => {
     const body = await expectProblem(
       "get",
@@ -613,7 +627,7 @@ describe("GET /api/v1/products/{code}/stock", () => {
 });
 
 describe("GET /api/v1/sales-orders", () => {
-  it("既定は受注日の新しい順・20 件。status・from・to で絞り込める（両端を含む）", async () => {
+  it("既定は受注日の新しい順・20 件", async () => {
     const all = (await expectMatchesSpec(
       "get",
       ORDERS,
@@ -629,38 +643,79 @@ describe("GET /api/v1/sales-orders", () => {
     });
     const keys = all.data.map((o) => `${o.orderDate} ${o.number}`);
     expect(keys).toEqual([...keys].sort().reverse());
+  });
 
-    const from = all.data[all.data.length - 1].orderDate;
-    const to = all.data[0].orderDate;
-    const filtered = (await expectMatchesSpec(
-      "get",
-      ORDERS,
-      await listOrders(`?status=shipped&from=${from}&to=${to}&perPage=100`, {
-        token: tokens.viewer.token,
-      }),
-    )) as {
-      data: { orderDate: string; status: string }[];
-      meta: { total: number };
-    };
-    const expected = await prisma.salesOrder.count({
-      where: {
-        status: "shipped",
-        orderDate: {
-          gte: new Date(`${from}T00:00:00Z`),
-          lte: new Date(`${to}T00:00:00Z`),
+  it("from・to・status で絞り込める（両端を含む）。from・to のどちらを無視しても件数が合わなくなる期間で確かめる", async () => {
+    // 期間の境界は、受注日の一覧の 1/3 と 2/3 の位置の日（どちらの側にも期間外の受注がある）
+    const dates = (
+      await prisma.salesOrder.findMany({
+        distinct: ["orderDate"],
+        select: { orderDate: true },
+        orderBy: { orderDate: "asc" },
+      })
+    ).map((o) => o.orderDate.toISOString().slice(0, 10));
+    expect(dates.length).toBeGreaterThanOrEqual(6);
+    const from = dates[Math.floor(dates.length / 3)];
+    const to = dates[Math.floor((dates.length * 2) / 3)];
+    const day = (value: string) => new Date(`${value}T00:00:00Z`);
+    const all = await prisma.salesOrder.count();
+    const cases = [
+      { query: `from=${from}`, where: { orderDate: { gte: day(from) } } },
+      { query: `to=${to}`, where: { orderDate: { lte: day(to) } } },
+      {
+        query: `from=${from}&to=${to}`,
+        where: { orderDate: { gte: day(from), lte: day(to) } },
+      },
+      {
+        query: `from=${to}&to=${to}`,
+        where: { orderDate: { gte: day(to), lte: day(to) } },
+      },
+      {
+        query: `status=shipped&from=${from}&to=${to}`,
+        where: {
+          status: "shipped" as const,
+          orderDate: { gte: day(from), lte: day(to) },
         },
       },
-    });
-    expect(expected).toBeGreaterThan(0);
-    expect(filtered.meta.total).toBe(expected);
-    for (const order of filtered.data) {
-      expect(order.status).toBe("shipped");
-      expect(order.orderDate >= from && order.orderDate <= to).toBe(true);
+    ];
+    for (const { query, where } of cases) {
+      const expected = await prisma.salesOrder.count({ where });
+      // 0 件や全件の条件では、絞り込みを無視する誤りを検出できないので先に確かめる
+      expect(expected, query).toBeGreaterThan(0);
+      expect(expected, query).toBeLessThan(all);
+      const body = (await expectMatchesSpec(
+        "get",
+        ORDERS,
+        await listOrders(`?${query}&perPage=100`, {
+          token: tokens.viewer.token,
+        }),
+      )) as {
+        data: { orderDate: string; status: string }[];
+        meta: { total: number };
+      };
+      expect(body.meta.total, query).toBe(expected);
+      expect(body.data.length, query).toBeGreaterThan(0);
+      expect(body.data, query).toHaveLength(Math.min(100, expected));
+      const params = new URLSearchParams(query);
+      for (const order of body.data) {
+        if (params.has("from")) {
+          expect(order.orderDate >= params.get("from")!, query).toBe(true);
+        }
+        if (params.has("to")) {
+          expect(order.orderDate <= params.get("to")!, query).toBe(true);
+        }
+        if (params.has("status")) {
+          expect(order.status, query).toBe(params.get("status"));
+        }
+      }
     }
   });
 
   it.each([
     ["?status=open", "status"],
+    ["?status=%00", "status"],
+    ["?from=1999-12-31", "from"],
+    ["?to=2100-01-01", "to"],
     ["?from=2026-02-30", "from"],
     ["?to=20261013", "to"],
     ["?from=2026-10-13&to=2026-10-12", "to"],
@@ -717,6 +772,18 @@ describe("GET /api/v1/sales-orders/{number}", () => {
         updatedAt: seed.updatedAt.toISOString(),
       });
     }
+  });
+
+  it("パスに NUL があれば 400（レビューの再現例 GET /api/v1/sales-orders/%00）", async () => {
+    const body = await expectProblem(
+      "get",
+      ORDER,
+      await getOrder("\u0000", { token: tokens.viewer.token }),
+      400,
+    );
+    expect(body.errors).toEqual([
+      { parameter: "number", detail: "NUL 文字（U+0000）は使えません" },
+    ]);
   });
 
   it("存在しない受注は 404", async () => {
@@ -940,6 +1007,20 @@ describe("POST /api/v1/sales-orders", () => {
       "納期が受注日より前（service の検証）",
       () => ({ ...validBody(), dueDate: yesterday() }),
       ["#/dueDate"],
+    ],
+    // NUL（レビューの再現例。PostgreSQL に渡すと 500 になる）
+    [
+      "顧客コードに NUL",
+      () => ({ ...validBody(), customerCode: "C\u0000" }),
+      ["#/customerCode"],
+    ],
+    [
+      "商品コードに NUL",
+      () => ({
+        ...validBody(),
+        lines: [{ productCode: "P\u0000", quantity: 1 }],
+      }),
+      ["#/lines/0/productCode"],
     ],
     [
       "存在しない顧客",

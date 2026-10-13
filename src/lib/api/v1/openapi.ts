@@ -21,6 +21,8 @@ import {
   API_PAGE_MAX,
   API_PER_PAGE_DEFAULT,
   API_PER_PAGE_MAX,
+  API_DATE_PATTERN,
+  API_DATE_RANGE_TEXT,
   API_QUERY_MAX_LENGTH,
   apiSchemaRegistry,
 } from "./schemas";
@@ -30,13 +32,14 @@ type JsonObject = Record<string, unknown>;
 const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
 
 /**
- * JSON Schema を読みやすくする: 日付・日時は format で表し、Zod が付ける長い正規表現（pattern）は外す。
+ * JSON Schema を読みやすくする: 日付・日時は format で表し、Zod が付ける長い正規表現（pattern）は外す
+ * （日付は範囲の pattern に置き換える）。
  * 整数の既定の範囲（±Number.MAX_SAFE_INTEGER）も外す
  */
 function tidy(schema: JsonObject): void {
-  if (schema.format === "date" || schema.format === "date-time") {
-    delete schema.pattern;
-  }
+  if (schema.format === "date-time") delete schema.pattern;
+  // 日付は Zod の長い正規表現の代わりに、受け付ける範囲（2000〜2099 年）の pattern を付ける
+  if (schema.format === "date") schema.pattern = API_DATE_PATTERN;
   if (schema.maximum === Number.MAX_SAFE_INTEGER) delete schema.maximum;
   if (schema.minimum === Number.MIN_SAFE_INTEGER) delete schema.minimum;
 }
@@ -146,7 +149,9 @@ const INFO_DESCRIPTION = `StockFlow（受発注・在庫管理のデモ）の外
 - 一覧は \`{ data, meta: { page, perPage, total } }\`。perPage は既定 ${API_PER_PAGE_DEFAULT}・上限 ${API_PER_PAGE_MAX}
 - 金額（円）・数量は整数、日付は YYYY-MM-DD、日時は ISO 8601（UTC）
 - 商品・取引先・受注はコード・番号で表します（内部の ID は出しません）
-- エラーは RFC 9457（application/problem+json）。detail は日本語`;
+- 日付のパラメーター・項目は ${API_DATE_RANGE_TEXT}の範囲
+- 文字列（クエリ・パスのパラメーター、本文の項目）に NUL（U+0000）を含むと 400
+- エラーは RFC 9457（application/problem+json）。detail は日本語。定義したパスに定義していないメソッドを送ると 405（Allow ヘッダー付き）`;
 
 /** OpenAPI 3.1 の定義 */
 export function buildOpenApiDocument(): JsonObject {
@@ -209,6 +214,7 @@ export function buildOpenApiDocument(): JsonObject {
               description: "現在庫と発注点",
               content: json("ProductStock"),
             },
+            "400": responseRef("BadRequest"),
             "401": responseRef("Unauthorized"),
             "403": responseRef("Forbidden"),
             "404": responseRef("NotFound"),
@@ -231,15 +237,22 @@ export function buildOpenApiDocument(): JsonObject {
             {
               name: "from",
               in: "query",
-              description: "受注日がこの日以降（YYYY-MM-DD。この日を含む）",
-              schema: { type: "string", format: "date" },
+              description: `受注日がこの日以降（YYYY-MM-DD。${API_DATE_RANGE_TEXT}。この日を含む）`,
+              schema: {
+                type: "string",
+                format: "date",
+                pattern: API_DATE_PATTERN,
+              },
             },
             {
               name: "to",
               in: "query",
-              description:
-                "受注日がこの日以前（YYYY-MM-DD。この日を含む）。from より前は 400",
-              schema: { type: "string", format: "date" },
+              description: `受注日がこの日以前（YYYY-MM-DD。${API_DATE_RANGE_TEXT}。この日を含む）。from より前は 400`,
+              schema: {
+                type: "string",
+                format: "date",
+                pattern: API_DATE_PATTERN,
+              },
             },
             { $ref: "#/components/parameters/page" },
             { $ref: "#/components/parameters/perPage" },
@@ -298,6 +311,7 @@ export function buildOpenApiDocument(): JsonObject {
           ],
           responses: {
             "200": { description: "受注詳細", content: json("SalesOrder") },
+            "400": responseRef("BadRequest"),
             "401": responseRef("Unauthorized"),
             "403": responseRef("Forbidden"),
             "404": responseRef("NotFound"),

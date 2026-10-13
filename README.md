@@ -497,7 +497,7 @@ pnpm exec playwright show-report           # 結果の HTML レポートを開�
 - **認証:** `Authorization: Bearer <token>` だけです。画面のログイン（Cookie）では使えません（ブラウザが自動で送る Cookie で API を動かせないようにして、CSRF の余地をなくすため）。失敗は理由（ヘッダーなし・形式違い・失効・ユーザー無効など）を区別せず、同じ 401（`WWW-Authenticate: Bearer realm="StockFlow API"`）を返します
 - **権限:** トークンの持ち主の**現在の**ロールに従います（ロール変更・無効化は次のリクエストから効く）。viewer は参照のみ、受注の登録は admin／staff
 - **形式:** 一覧は `{ data, meta: { page, perPage, total } }`（perPage は既定 20・上限 100。全件数を超えるページは空の data）。金額・数量は整数、日付は `YYYY-MM-DD`、日時は ISO 8601（UTC）。商品・取引先・受注はコード・番号で表し、内部の ID は出しません。コード・番号の大文字・小文字は区別しません
-- **エラー:** RFC 9457（`application/problem+json`。`type` は `about:blank`、`title` は HTTP のステータスの説明、`detail` は日本語）。400（検証エラーは `errors` に項目ごとの内容。本文の項目は JSON Pointer の `pointer`、クエリは `parameter`）／401／403／404／413（本文が 64KB を超える）／415（JSON 以外）。画面の一覧と違い、不正なクエリ（`perPage=101` など）は既定値に置き換えずに 400 にします
+- **エラー:** RFC 9457（`application/problem+json`。`type` は `about:blank`、`title` は HTTP のステータスの説明、`detail` は日本語）。400（検証エラーは `errors` に項目ごとの内容。本文の項目は JSON Pointer の `pointer`、クエリ・パスは `parameter`）／401／403／404／405（定義していないメソッド。`Allow` 付き）／413（本文が 64KB を超える）／415（JSON 以外）。画面の一覧と違い、不正なクエリ（`perPage=101` など）は既定値に置き換えずに 400 にします。日付は 2000〜2099 年だけを受け付けます（OpenAPI の定義にも `pattern` と説明で記載）。文字列（クエリ・パスのパラメーター、本文の項目）に NUL（U+0000）を含むと 400 です（PostgreSQL の文字列に入れられないため、DB に渡す前に弾く）
 - **受注の登録:** 顧客コード・商品コード・数量（・納期・備考）を送ると、draft で作成します。単価は商品マスタの売価です。画面と同じ受注の service（`src/lib/sales-orders/service.ts`）を通すので、検証（顧客の種別・有効、商品の有効・重複、納期、合計の上限）・ロック・採番・金額の計算・操作履歴は画面と同じです。操作履歴の内容に「REST API（トークン #ID）から作成」と残ります。余分な項目・型違い（数量を文字列で送るなど）は 400 です
 
 ### トークンの発行
@@ -521,9 +521,9 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3000/api/v1/products/
 curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3000/api/v1/sales-orders?status=draft&from=2026-10-01&to=2026-10-31"
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3000/api/v1/sales-orders/SO-20261013-001
 
-# 受注の登録（staff／admin のトークン）
+# 受注の登録（staff／admin のトークン）。dueDate（納期）は今日以降の日付に置き換える（省略もできる）
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"customerCode":"C-0001","dueDate":"2026-10-31","note":"API から登録","lines":[{"productCode":"P-0001","quantity":3}]}' \
+  -d '{"customerCode":"C-0001","dueDate":"YYYY-MM-DD","note":"API から登録","lines":[{"productCode":"P-0001","quantity":3}]}' \
   http://localhost:3000/api/v1/sales-orders
 ```
 

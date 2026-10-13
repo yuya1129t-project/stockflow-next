@@ -17,6 +17,7 @@ export const PROBLEM_TITLES = {
   401: "Unauthorized",
   403: "Forbidden",
   404: "Not Found",
+  405: "Method Not Allowed",
   413: "Content Too Large",
   415: "Unsupported Media Type",
   500: "Internal Server Error",
@@ -76,6 +77,46 @@ export function validationProblem(errors: ProblemFieldError[]): Response {
       errors,
     },
   );
+}
+
+type DefinedMethod = "GET" | "POST";
+
+/** Allow ヘッダーの値（GET があれば Next.js が自動で応じる HEAD と、OPTIONS も含める） */
+export function allowHeader(allowed: readonly DefinedMethod[]): string {
+  return [
+    ...allowed,
+    ...(allowed.includes("GET") ? ["HEAD"] : []),
+    "OPTIONS",
+  ].join(", ");
+}
+
+/**
+ * 定義したパスに、定義していないメソッドが来たときのハンドラー（405。RFC 9110 §15.5.6 のとおり Allow を付ける）。
+ * Route Handler で、定義していないメソッド（GET・POST・PUT・PATCH・DELETE のうち）にこれを export する
+ */
+export function methodNotAllowed(
+  allowed: readonly DefinedMethod[],
+): () => Response {
+  return () =>
+    problem(
+      405,
+      `このメソッドは使えません（使えるメソッド: ${allowed.join(", ")}）`,
+      { headers: { Allow: allowHeader(allowed) } },
+    );
+}
+
+/**
+ * OPTIONS のハンドラー（204 と Allow）。Next.js の自動の OPTIONS は export したすべてのメソッド（405 を返すものを含む）を
+ * Allow に並べるので、定義したメソッドだけを返すように置き換える
+ */
+export function optionsHandler(
+  allowed: readonly DefinedMethod[],
+): () => Response {
+  return () =>
+    new Response(null, {
+      status: 204,
+      headers: { Allow: allowHeader(allowed) },
+    });
 }
 
 /**

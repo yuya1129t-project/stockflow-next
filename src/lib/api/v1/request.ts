@@ -7,6 +7,8 @@
  * - 大きさの上限は API_BODY_MAX_BYTES。Content-Length が上限を超えていれば読まずに 413。Content-Length がなくても
  *   読みながら数え、超えたらその時点で読むのをやめて 413
  * - UTF-8 として正しくない・JSON として正しくない・空の本文は 400
+ * - 文字列（値・キー）に NUL（U+0000）を含む本文は 400（PostgreSQL の文字列には NUL を入れられず、DB に渡すと 500 になる。
+ *   クエリ・パスのパラメーターも同じく 400 にする）
  *
  * クエリ:
  * - 画面の一覧（不正な値は既定値に置き換える）と違い、API では不正な値を 400 にする（呼び出し側の誤りに気づけるように）
@@ -18,11 +20,63 @@ import { parseDateOnly } from "@/lib/orders/dates";
 
 import { problem, validationProblem } from "./responses";
 import {
+  API_DATE_RANGE_TEXT,
   API_PAGE_MAX,
   API_PER_PAGE_DEFAULT,
   API_PER_PAGE_MAX,
   type ProblemFieldError,
 } from "./schemas";
+
+/** NUL（U+0000）を含む文字列のエラー */
+export const NUL_MESSAGE = "NUL 文字（U+0000）は使えません";
+
+function hasNul(value: string): boolean {
+  return value.includes("\u0000");
+}
+
+/**
+ * JSON の値の中で、NUL を含む文字列（値・キー）の位置（JSON Pointer）。
+ * 深い入れ子でも再帰せず、パスは親へのリンクで持つ（本文の上限内の深さで計算量が膨らまないように）
+ */
+function nulPointers(root: unknown): string[] {
+  type Node = { key: PropertyKey; parent: Node | null };
+  const pathOf = (node: Node | null): PropertyKey[] => {
+    const path: PropertyKey[] = [];
+    for (let n = node; n; n = n.parent) path.unshift(n.key);
+    return path;
+  };
+  const found: string[] = [];
+  const stack: { value: unknown; node: Node | null }[] = [
+    { value: root, node: null },
+  ];
+  while (stack.length > 0) {
+    const { value, node } = stack.pop()!;
+    if (typeof value === "string") {
+      if (hasNul(value)) found.push(toJsonPointer(pathOf(node)));
+    } else if (value !== null && typeof value === "object") {
+      for (const [key, child] of Object.entries(value)) {
+        const childNode: Node = {
+          key: Array.isArray(value) ? Number(key) : key,
+          parent: node,
+        };
+        if (hasNul(key)) found.push(toJsonPointer(pathOf(childNode)));
+        else stack.push({ value: child, node: childNode });
+      }
+    }
+  }
+  return found.sort();
+}
+
+/** パスのパラメーター（NUL を含めば 400） */
+export function readPathParam(name: string, value: string): ReadResult<string> {
+  if (hasNul(value)) {
+    return {
+      ok: false,
+      response: validationProblem([{ parameter: name, detail: NUL_MESSAGE }]),
+    };
+  }
+  return { ok: true, value };
+}
 
 /** 本文の大きさの上限（明細 100 行・備考 500 文字でも十分に収まる） */
 export const API_BODY_MAX_BYTES = 64 * 1024;
@@ -117,14 +171,25 @@ export async function readJsonBody(
   if (text.trim() === "") {
     return { ok: false, response: problem(400, "本文が空です") };
   }
+  let value: unknown;
   try {
-    return { ok: true, value: JSON.parse(text) as unknown };
+    value = JSON.parse(text);
   } catch {
     return {
       ok: false,
       response: problem(400, "本文が JSON として正しくありません"),
     };
   }
+  const nul = nulPointers(value);
+  if (nul.length > 0) {
+    return {
+      ok: false,
+      response: validationProblem(
+        nul.map((pointer) => ({ pointer, detail: NUL_MESSAGE })),
+      ),
+    };
+  }
+  return { ok: true, value };
 }
 
 /** JSON Pointer（RFC 6901）の URI フラグメント表記（例 #/lines/0/quantity） */
@@ -233,6 +298,10 @@ export class QueryReader {
       this.errors.push({ parameter: name, detail: "1 回だけ指定してください" });
       return undefined;
     }
+    if (values[0] !== undefined && hasNul(values[0])) {
+      this.errors.push({ parameter: name, detail: NUL_MESSAGE });
+      return undefined;
+    }
     return values[0];
   }
 
@@ -288,8 +357,7 @@ export class QueryReader {
     if (!parseDateOnly(value)) {
       this.errors.push({
         parameter: name,
-        detail:
-          "YYYY-MM-DD の形式の実在する日付（2000〜2099 年）で指定してください",
+        detail: `YYYY-MM-DD の形式の実在する日付（${API_DATE_RANGE_TEXT}）で指定してください`,
       });
       return "";
     }

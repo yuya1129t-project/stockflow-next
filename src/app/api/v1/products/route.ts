@@ -4,7 +4,12 @@
  */
 import { authenticateApiRequest } from "@/lib/api/v1/auth";
 import { QueryReader } from "@/lib/api/v1/request";
-import { apiJson, withApiErrors } from "@/lib/api/v1/responses";
+import {
+  apiJson,
+  methodNotAllowed,
+  optionsHandler,
+  withApiErrors,
+} from "@/lib/api/v1/responses";
 import { API_QUERY_MAX_LENGTH } from "@/lib/api/v1/schemas";
 import { toApiProduct } from "@/lib/api/v1/serialize";
 import { getPrisma } from "@/lib/db";
@@ -31,3 +36,10 @@ export const GET = withApiErrors(async (request: Request) => {
     meta: { page, perPage, total: result.total },
   });
 });
+
+// 定義していないメソッドは 405（Allow 付き）。OPTIONS は定義したメソッドだけを Allow で返す
+export const POST = methodNotAllowed(["GET"]);
+export const PUT = methodNotAllowed(["GET"]);
+export const PATCH = methodNotAllowed(["GET"]);
+export const DELETE = methodNotAllowed(["GET"]);
+export const OPTIONS = optionsHandler(["GET"]);

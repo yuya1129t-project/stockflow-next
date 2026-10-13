@@ -8,7 +8,12 @@
  */
 import { authenticateApiRequest } from "@/lib/api/v1/auth";
 import { QueryReader, readJsonBody } from "@/lib/api/v1/request";
-import { apiJson, withApiErrors } from "@/lib/api/v1/responses";
+import {
+  apiJson,
+  methodNotAllowed,
+  optionsHandler,
+  withApiErrors,
+} from "@/lib/api/v1/responses";
 import { createSalesOrderFromApi } from "@/lib/api/v1/sales-orders";
 import {
   toApiSalesOrder,
@@ -69,3 +74,9 @@ export const POST = withApiErrors(async (request: Request) => {
     },
   });
 });
+
+// 定義していないメソッドは 405（Allow 付き）。OPTIONS は定義したメソッドだけを Allow で返す
+export const PUT = methodNotAllowed(["GET", "POST"]);
+export const PATCH = methodNotAllowed(["GET", "POST"]);
+export const DELETE = methodNotAllowed(["GET", "POST"]);
+export const OPTIONS = optionsHandler(["GET", "POST"]);

@@ -8,6 +8,7 @@ import {
   API_BODY_MAX_BYTES,
   QueryReader,
   readJsonBody,
+  readPathParam,
   toJsonPointer,
   zodFieldErrors,
 } from "./request";
@@ -127,6 +128,66 @@ describe("readJsonBody", () => {
     expect(await problemOf(result)).toMatchObject({
       status: 400,
       body: { detail: "本文が UTF-8 として正しくありません" },
+    });
+  });
+});
+
+describe("NUL（U+0000）", () => {
+  const json = (body: string) =>
+    readJsonBody(post(body, { "content-type": "application/json" }));
+
+  it("本文の文字列（値・キー）に NUL があれば 400 で位置を返す（入れ子・配列の中も）", async () => {
+    const result = await json(
+      JSON.stringify({
+        customerCode: "C\u0000",
+        note: "ok",
+        lines: [{ productCode: "P\u0000" }, { productCode: "P-1" }],
+        ["k\u0000"]: 1,
+      }),
+    );
+    if (result.ok) throw new Error("成功してしまいました");
+    expect(result.response.status).toBe(400);
+    expect(await result.response.json()).toMatchObject({
+      errors: [
+        { pointer: "#/customerCode", detail: "NUL 文字（U+0000）は使えません" },
+        { pointer: "#/k\u0000", detail: "NUL 文字（U+0000）は使えません" },
+        {
+          pointer: "#/lines/0/productCode",
+          detail: "NUL 文字（U+0000）は使えません",
+        },
+      ],
+    });
+  });
+
+  it("NUL のない本文と、深い入れ子（再帰しない）はそのまま読む", async () => {
+    expect(await json('{"a":"\\u0001 改行\\n"}')).toEqual({
+      ok: true,
+      value: { a: "\u0001 改行\n" },
+    });
+    const deep = `${"[".repeat(30_000)}"x"${"]".repeat(30_000)}`;
+    expect((await json(deep)).ok).toBe(true);
+    const deepNul = `${"[".repeat(30_000)}"\\u0000"${"]".repeat(30_000)}`;
+    expect((await json(deepNul)).ok).toBe(false);
+  });
+
+  it("クエリ・パスのパラメーターに NUL があれば 400", async () => {
+    const r = new QueryReader(new URLSearchParams("q=%00&page=1%00"));
+    expect(r.string("q", 100)).toBe("");
+    r.paging();
+    expect(r.errors).toEqual([
+      { parameter: "q", detail: "NUL 文字（U+0000）は使えません" },
+      { parameter: "page", detail: "NUL 文字（U+0000）は使えません" },
+    ]);
+
+    expect(readPathParam("code", "P-0001")).toEqual({
+      ok: true,
+      value: "P-0001",
+    });
+    const path = readPathParam("code", "\u0000");
+    if (path.ok) throw new Error("成功してしまいました");
+    expect(path.response.status).toBe(400);
+    expect(await path.response.json()).toMatchObject({
+      errors: [{ parameter: "code", detail: "NUL 文字（U+0000）は使えません" }],
     });
   });
 });

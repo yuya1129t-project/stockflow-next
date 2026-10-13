@@ -12,6 +12,7 @@
 import { z } from "zod";
 
 import { ORDER_TOTAL_MAX } from "@/lib/orders/amounts";
+import { ORDER_DATE_MAX_YEAR, ORDER_DATE_MIN_YEAR } from "@/lib/orders/dates";
 import { ORDER_LINE_LIMITS } from "@/lib/orders/schema";
 import { PARTNER_LIMITS } from "@/lib/partners/schema";
 import { PRODUCT_LIMITS } from "@/lib/products/schema";
@@ -38,6 +39,13 @@ export const API_PER_PAGE_MAX = 100;
 export const API_PAGE_MAX = 1_000_000;
 /** 検索語（q）の最大長（画面の検索と同じ） */
 export const API_QUERY_MAX_LENGTH = 100;
+
+/**
+ * 日付が受け付けられる範囲（parseDateOnly と同じ 2000〜2099 年）。OpenAPI では日付の項目・パラメーターに
+ * この pattern と説明を付ける（② Laravel・③ FastAPI 版と 400 になる範囲を揃えるため。src/lib/api/v1/openapi.ts）
+ */
+export const API_DATE_RANGE_TEXT = `${ORDER_DATE_MIN_YEAR}〜${ORDER_DATE_MAX_YEAR} 年`;
+export const API_DATE_PATTERN = "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$";
 
 const date = () => z.iso.date();
 const dateTime = () => z.iso.datetime();
@@ -139,8 +147,10 @@ export const salesOrderSummarySchema = component(
   "受注（一覧の 1 件。明細は含まない）",
   z.object({
     number: z.string().describe("受注番号（SO-YYYYMMDD-NNN）"),
-    orderDate: date().describe("受注日（YYYY-MM-DD）"),
-    dueDate: date().nullable().describe("納期（YYYY-MM-DD。未設定は null）"),
+    orderDate: date().describe(`受注日（YYYY-MM-DD。${API_DATE_RANGE_TEXT}）`),
+    dueDate: date()
+      .nullable()
+      .describe(`納期（YYYY-MM-DD。${API_DATE_RANGE_TEXT}。未設定は null）`),
     status: salesOrderStatusSchema,
     customer: customerRefSchema,
     subtotal: yen("小計"),
@@ -181,8 +191,10 @@ export const salesOrderSchema = component(
   "受注（明細を含む）",
   z.object({
     number: z.string().describe("受注番号（SO-YYYYMMDD-NNN）"),
-    orderDate: date().describe("受注日（YYYY-MM-DD）"),
-    dueDate: date().nullable().describe("納期（YYYY-MM-DD。未設定は null）"),
+    orderDate: date().describe(`受注日（YYYY-MM-DD。${API_DATE_RANGE_TEXT}）`),
+    dueDate: date()
+      .nullable()
+      .describe(`納期（YYYY-MM-DD。${API_DATE_RANGE_TEXT}。未設定は null）`),
     status: salesOrderStatusSchema,
     customer: customerRefSchema,
     note: z.string().nullable().describe("備考（未設定は null）"),
@@ -222,7 +234,9 @@ export const salesOrderCreateSchema = component(
     dueDate: date()
       .nullable()
       .optional()
-      .describe("納期（YYYY-MM-DD。受注日以降。省略・null は未設定）"),
+      .describe(
+        `納期（YYYY-MM-DD。${API_DATE_RANGE_TEXT}で、受注日以降。省略・null は未設定）`,
+      ),
     note: z
       .string()
       .max(ORDER_LINE_LIMITS.note)

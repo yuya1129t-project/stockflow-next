@@ -3,7 +3,14 @@
  * 商品コードは大文字に揃えて探す（画面と同じく p-0001 と P-0001 は同じ商品）
  */
 import { authenticateApiRequest } from "@/lib/api/v1/auth";
-import { apiJson, problem, withApiErrors } from "@/lib/api/v1/responses";
+import { readPathParam } from "@/lib/api/v1/request";
+import {
+  apiJson,
+  methodNotAllowed,
+  optionsHandler,
+  problem,
+  withApiErrors,
+} from "@/lib/api/v1/responses";
 import { toApiProductStock } from "@/lib/api/v1/serialize";
 import { getPrisma } from "@/lib/db";
 import { getProduct } from "@/lib/products/queries";
@@ -16,7 +23,9 @@ export const GET = withApiErrors(
     const auth = await authenticateApiRequest(request, "view");
     if (!auth.ok) return auth.response;
 
-    const code = (await params).code.trim().toUpperCase();
+    const param = readPathParam("code", (await params).code);
+    if (!param.ok) return param.response;
+    const code = param.value.trim().toUpperCase();
     const db = getPrisma();
     const found = await db.product.findUnique({
       where: { code },
@@ -29,3 +38,10 @@ export const GET = withApiErrors(
     return apiJson(toApiProductStock(product));
   },
 );
+
+// 定義していないメソッドは 405（Allow 付き）。OPTIONS は定義したメソッドだけを Allow で返す
+export const POST = methodNotAllowed(["GET"]);
+export const PUT = methodNotAllowed(["GET"]);
+export const PATCH = methodNotAllowed(["GET"]);
+export const DELETE = methodNotAllowed(["GET"]);
+export const OPTIONS = optionsHandler(["GET"]);
