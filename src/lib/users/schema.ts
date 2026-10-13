@@ -105,6 +105,10 @@ export const userRoleSchema = z.object({ role: roleSchema });
 /** パスワード再設定（admin が新しいパスワードを設定する） */
 export const passwordResetSchema = z.object({
   password: passwordSchema("新しいパスワード"),
+  /** 対象の API トークンもすべて失効させる（画面の既定はオン） */
+  revokeTokens: z
+    .boolean({ error: "API トークンの失効の指定が正しくありません" })
+    .default(true),
 });
 export type PasswordResetFormValues = z.input<typeof passwordResetSchema>;
 

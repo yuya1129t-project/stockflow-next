@@ -106,6 +106,25 @@ describe("userRoleSchema・passwordResetSchema・apiTokenCreateSchema", () => {
     ).toBe(true);
   });
 
+  it("パスワード再設定の「API トークンも失効する」は既定でオン", () => {
+    expect(passwordResetSchema.parse({ password: "long-enough" })).toEqual({
+      password: "long-enough",
+      revokeTokens: true,
+    });
+    expect(
+      passwordResetSchema.parse({
+        password: "long-enough",
+        revokeTokens: false,
+      }).revokeTokens,
+    ).toBe(false);
+    expect(
+      passwordResetSchema.safeParse({
+        password: "long-enough",
+        revokeTokens: "no",
+      }).success,
+    ).toBe(false);
+  });
+
   it("トークンの名前は必須・50 文字まで・1 行", () => {
     expect(apiTokenCreateSchema.parse({ name: " 在庫連携 " })).toEqual({
       name: "在庫連携",

@@ -372,6 +372,25 @@ describe("無効化・再有効化", () => {
     ).toBe(1);
   });
 
+  it("再有効化でもセッションをすべて削除する（無効化と競合して作られたセッションを使えるようにしない）", async () => {
+    const user = await registerUser();
+    await setUserActive(prisma, ADMIN, user.id, false);
+    // 無効化と同時に進んでいたログインが、無効化の後に作ったセッションの代わり
+    await prisma.session.create({
+      data: {
+        id: `zu-race-${user.id}`,
+        token: `zu-race-token-${user.id}`,
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      },
+    });
+    expect(await setUserActive(prisma, ADMIN, user.id, true)).toEqual({
+      ok: true,
+      data: null,
+    });
+    expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
+  });
+
   it("自分自身は無効にできない", async () => {
     const admin = await registerUser({ role: "admin" });
     expect(await setUserActive(prisma, admin, admin.id, false)).toEqual({
@@ -415,6 +434,61 @@ describe("パスワード再設定", () => {
       where: { action: "password_reset", targetId: user.id },
     });
     expect(log.summary).not.toContain(newPassword);
+  });
+
+  it("自分自身の再設定でも、別々にログインした自分のセッションをすべて終了する", async () => {
+    const admin = await registerUser({ role: "admin" });
+    const cookieA = await signIn(admin.email, PASSWORD);
+    const cookieB = await signIn(admin.email, PASSWORD);
+    expect((await getSessionUser(auth, cookieA))?.id).toBe(admin.id);
+    expect((await getSessionUser(auth, cookieB))?.id).toBe(admin.id);
+
+    const newPassword = "zu-self-new-5555";
+    expect(
+      await resetUserPassword(prisma, admin, admin.id, {
+        password: newPassword,
+      }),
+    ).toEqual({ ok: true, data: null });
+
+    expect(await getSessionUser(auth, cookieA)).toBeNull();
+    expect(await getSessionUser(auth, cookieB)).toBeNull();
+    expect(await prisma.session.count({ where: { userId: admin.id } })).toBe(0);
+    await signIn(admin.email, newPassword);
+  });
+
+  it("既定では API トークンもすべて失効させ、件数を操作履歴に残す", async () => {
+    const user = await registerUser();
+    const { token } = await issue(user);
+    expect(
+      await resetUserPassword(prisma, ADMIN, user.id, {
+        password: "zu-new-pass-1111",
+      }),
+    ).toEqual({ ok: true, data: null });
+    expect(await authenticateApiToken(bearer(token), { db: prisma })).toEqual({
+      ok: false,
+    });
+    const log = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "password_reset", targetId: user.id },
+    });
+    expect(log.summary).toContain("API トークン 1 件を失効");
+  });
+
+  it("「API トークンもすべて失効する」をオフにすると、トークンは残る", async () => {
+    const user = await registerUser();
+    const { token } = await issue(user);
+    expect(
+      await resetUserPassword(prisma, ADMIN, user.id, {
+        password: "zu-new-pass-2222",
+        revokeTokens: false,
+      }),
+    ).toEqual({ ok: true, data: null });
+    expect((await authenticateApiToken(bearer(token), { db: prisma })).ok).toBe(
+      true,
+    );
+    const log = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "password_reset", targetId: user.id },
+    });
+    expect(log.summary).not.toContain("API トークン");
   });
 
   it("短いパスワードは項目のエラー", async () => {
@@ -574,6 +648,32 @@ describe("API トークン", () => {
     );
   });
 
+  it("トークンが失効していなくても、持ち主が無効なら検証に失敗する", async () => {
+    const user = await registerUser();
+    const { id, token } = await issue(user);
+    // 無効化の処理を通さず（トークンを失効させずに）ユーザーだけを無効にする
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { isActive: false },
+    });
+    expect(
+      (await prisma.apiToken.findUniqueOrThrow({ where: { id } })).revokedAt,
+    ).toBeNull();
+    expect(await authenticateApiToken(bearer(token), { db: prisma })).toEqual({
+      ok: false,
+    });
+  });
+
+  it("範囲外の tokenId は例外にせず「見つかりません」", async () => {
+    const user = await registerUser();
+    for (const tokenId of [2 ** 31, 2 ** 40, 0, -1, 1.5]) {
+      expect(await revokeApiToken(prisma, ADMIN, user.id, tokenId)).toEqual({
+        ok: false,
+        error: "API トークンが見つかりません",
+      });
+    }
+  });
+
   it("権限はトークンの持ち主のいまのロールに従う", async () => {
     const user = await registerUser({ role: "staff" });
     const { token } = await issue(user);
@@ -645,6 +745,15 @@ describe("権限（ユーザー管理は admin のみ）", () => {
     async (_, actor) => {
       const target = await registerUser({ role: "viewer" });
       const { id: tokenId, token } = await issue(target);
+      // 拒否された再設定の前後で credential とセッションが変わらないことを確かめるため、先にログインしておく
+      const cookie = await signIn(target.email, PASSWORD);
+      const credentialBefore = await prisma.account.findMany({
+        where: { userId: target.id },
+      });
+      const sessionsBefore = await prisma.session.findMany({
+        where: { userId: target.id },
+        orderBy: { id: "asc" },
+      });
       const expected =
         actor === null
           ? { ok: false, error: "ログインが必要です" }
@@ -683,8 +792,202 @@ describe("権限（ユーザー管理は admin のみ）", () => {
       expect(
         await prisma.apiToken.count({ where: { userId: target.id } }),
       ).toBe(1);
+      // パスワード・セッションも変わらない: 元の Cookie と元のパスワードが使え、指定した新しいパスワードは使えない
+      expect(
+        await prisma.account.findMany({ where: { userId: target.id } }),
+      ).toEqual(credentialBefore);
+      expect(
+        await prisma.session.findMany({
+          where: { userId: target.id },
+          orderBy: { id: "asc" },
+        }),
+      ).toEqual(sessionsBefore);
+      expect((await getSessionUser(auth, cookie))?.id).toBe(target.id);
+      expect(await signInError(target.email, "hijacked-1234")).toMatchObject({
+        status: 401,
+      });
+      await signIn(target.email, PASSWORD);
     },
   );
+});
+
+describe("同時実行と操作者の確かめ直し", () => {
+  const WAIT_LIMIT_MS = 10_000;
+
+  async function waitUntil(label: string, condition: () => Promise<boolean>) {
+    const deadline = Date.now() + WAIT_LIMIT_MS;
+    while (!(await condition())) {
+      if (Date.now() > deadline) {
+        throw new Error(`「${label}」の状態になりませんでした`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  /** 観測用の接続から: blocker のロックを待っているセッションがあるか */
+  async function someoneBlockedBy(blocker: number): Promise<boolean> {
+    const [row] = await prisma.$queryRaw<{ count: number }[]>`
+      SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
+      WHERE "datname" = current_database()
+        AND ${blocker}::int = ANY(pg_blocking_pids("pid"))`;
+    return row.count > 0;
+  }
+
+  /**
+   * デモの admin を含め、keep 以外の有効な admin を一時的に無効にして fn を実行する（終わったら元に戻す）。
+   * 「有効な admin が keep の人たちだけ」の環境（デモ用アカウントのない環境）を作るため
+   */
+  async function withOnlyAdmins(
+    keep: SessionUser[],
+    fn: () => Promise<void>,
+  ): Promise<void> {
+    const others = await prisma.user.findMany({
+      where: {
+        role: "admin",
+        isActive: true,
+        id: { notIn: keep.map((u) => u.id) },
+      },
+      select: { id: true },
+    });
+    const ids = others.map((u) => u.id);
+    await prisma.user.updateMany({
+      where: { id: { in: ids } },
+      data: { isActive: false },
+    });
+    try {
+      await fn();
+    } finally {
+      await prisma.user.updateMany({
+        where: { id: { in: ids } },
+        data: { isActive: true },
+      });
+    }
+  }
+
+  async function activeAdminIds(): Promise<string[]> {
+    const admins = await prisma.user.findMany({
+      where: { role: "admin", isActive: true },
+      select: { id: true },
+    });
+    return admins.map((u) => u.id).sort();
+  }
+
+  it("2 人の admin が同時に互いを降格しても、片方だけが成功し、有効な admin は 0 人にならない", async () => {
+    const a = await registerUser({ role: "admin" });
+    const b = await registerUser({ role: "admin" });
+    await withOnlyAdmins([a, b], async () => {
+      expect(await activeAdminIds()).toEqual([a.id, b.id].sort());
+      const results = await Promise.all([
+        changeUserRole(prisma, a, b.id, { role: "viewer" }),
+        changeUserRole(prisma, b, a.id, { role: "viewer" }),
+      ]);
+      expect(results.filter((r) => r.ok)).toHaveLength(1);
+      expect(results.filter((r) => !r.ok)).toEqual([
+        { ok: false, error: "この操作を行う権限がありません" },
+      ]);
+      expect(await activeAdminIds()).toHaveLength(1);
+    });
+  });
+
+  it("2 人の admin が同時に互いを無効化しても、片方だけが成功する", async () => {
+    const a = await registerUser({ role: "admin" });
+    const b = await registerUser({ role: "admin" });
+    await withOnlyAdmins([a, b], async () => {
+      const results = await Promise.all([
+        setUserActive(prisma, a, b.id, false),
+        setUserActive(prisma, b, a.id, false),
+      ]);
+      expect(results.filter((r) => r.ok)).toHaveLength(1);
+      expect(await activeAdminIds()).toHaveLength(1);
+    });
+  });
+
+  it("認可の後に操作者が無効化・降格されていたら、どの操作も拒否して何も変えない", async () => {
+    const a = await registerUser({ role: "admin" });
+    const b = await registerUser({ role: "admin" });
+    const target = await registerUser({ role: "viewer" });
+    const { id: tokenId, token } = await issue(target);
+    await withOnlyAdmins([a, b], async () => {
+      // a の SessionUser（認可を通った時点の値）は admin のまま、DB では無効になっている
+      expect(await setUserActive(prisma, b, a.id, false)).toEqual({
+        ok: true,
+        data: null,
+      });
+      const forbidden = { ok: false, error: "この操作を行う権限がありません" };
+      const logsBefore = await prisma.auditLog.count();
+      const usersBefore = await prisma.user.count();
+      expect(await createUser(prisma, a, newUserInput())).toEqual(forbidden);
+      expect(
+        await changeUserRole(prisma, a, target.id, { role: "admin" }),
+      ).toEqual(forbidden);
+      expect(await setUserActive(prisma, a, target.id, false)).toEqual(
+        forbidden,
+      );
+      expect(
+        await resetUserPassword(prisma, a, target.id, {
+          password: "hijacked-1234",
+        }),
+      ).toEqual(forbidden);
+      expect(await issueApiToken(prisma, a, target.id, { name: "x" })).toEqual(
+        forbidden,
+      );
+      expect(await revokeApiToken(prisma, a, target.id, tokenId)).toEqual(
+        forbidden,
+      );
+      expect(await prisma.auditLog.count()).toBe(logsBefore);
+      expect(await prisma.user.count()).toBe(usersBefore);
+      expect(
+        await prisma.user.findUniqueOrThrow({ where: { id: target.id } }),
+      ).toMatchObject({ role: "viewer", isActive: true });
+      expect(
+        (await authenticateApiToken(bearer(token), { db: prisma })).ok,
+      ).toBe(true);
+
+      // 降格された操作者も同じ
+      await setUserActive(prisma, b, a.id, true);
+      await changeUserRole(prisma, b, a.id, { role: "staff" });
+      expect(
+        await changeUserRole(prisma, a, target.id, { role: "staff" }),
+      ).toEqual(forbidden);
+    });
+  });
+
+  it("無効化とトークン発行が同時に走っても、無効なユーザーにトークンが残らない（ユーザー行のロック）", async () => {
+    const user = await registerUser();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let lockerPid = 0;
+    // 無効化の代わり: ユーザー行をロックしたまま止めておき、発行がロック待ちになってから無効にして確定する
+    const locker = prisma.$transaction(
+      async (tx) => {
+        const [row] = await tx.$queryRaw<{ pid: number }[]>`
+          SELECT pg_backend_pid() AS "pid"`;
+        await tx.$queryRaw`SELECT "id" FROM "user" WHERE "id" = ${user.id} FOR NO KEY UPDATE`;
+        lockerPid = row.pid;
+        await gate;
+        await tx.user.update({
+          where: { id: user.id },
+          data: { isActive: false },
+        });
+      },
+      { timeout: 15_000 },
+    );
+    await waitUntil("ロックを取った", async () => lockerPid !== 0);
+    const issuing = issueApiToken(prisma, ADMIN, user.id, { name: "race" });
+    try {
+      await waitUntil("発行がユーザー行のロックを待っている", () =>
+        someoneBlockedBy(lockerPid),
+      );
+    } finally {
+      release();
+      await locker;
+    }
+    expect(await issuing).toEqual({
+      ok: false,
+      error: "無効なユーザーには API トークンを発行できません",
+    });
+    expect(await prisma.apiToken.count({ where: { userId: user.id } })).toBe(0);
+  });
 });
 
 describe("操作履歴の一覧", () => {

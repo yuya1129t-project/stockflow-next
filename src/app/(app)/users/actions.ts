@@ -17,6 +17,7 @@ import {
   issueApiToken,
   resetUserPassword,
   revokeApiToken,
+  isTokenId,
   setUserActive,
   type UserMutationError,
 } from "@/lib/users/service";
@@ -74,7 +75,7 @@ export async function setUserActiveAction(
   return { ok: true };
 }
 
-/** パスワード再設定 */
+/** パスワード再設定。自分自身のときは自分のセッションも終了するので、ログイン画面へ移動する */
 export async function resetUserPasswordAction(
   userId: string,
   input: unknown,
@@ -90,6 +91,7 @@ export async function resetUserPasswordAction(
   );
   if (!result.ok) return result;
   refreshUserPages();
+  if (userId === check.user.id) redirect("/login");
   return { ok: true };
 }
 
@@ -114,7 +116,7 @@ export async function revokeApiTokenAction(
 ): Promise<{ ok: true } | UserMutationError> {
   const check = await checkActionPermission("user:manage");
   if (!check.ok) return check;
-  if (!isUserId(userId) || !Number.isSafeInteger(tokenId)) {
+  if (!isUserId(userId) || !isTokenId(tokenId)) {
     return { ok: false, error: "API トークンが見つかりません" };
   }
   const result = await revokeApiToken(getPrisma(), check.user, userId, tokenId);

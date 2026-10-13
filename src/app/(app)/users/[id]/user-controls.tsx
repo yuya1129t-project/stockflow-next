@@ -172,7 +172,10 @@ export function UserActiveToggle({
   );
 }
 
-/** パスワード再設定（admin が新しいパスワードを設定する） */
+/**
+ * パスワード再設定（admin が新しいパスワードを設定する）。対象のセッションはすべて終了する。
+ * 自分自身の再設定では操作中のセッションも終わり、Server Action がログイン画面へ移動させる
+ */
 export function PasswordResetForm({
   userId,
   isSelf,
@@ -181,6 +184,7 @@ export function PasswordResetForm({
   isSelf: boolean;
 }) {
   const [password, setPassword] = useState("");
+  const [revokeTokens, setRevokeTokens] = useState(true);
   const [error, setError] = useState<string>();
   const [done, setDone] = useState<string>();
   const [pending, startTransition] = useTransition();
@@ -190,13 +194,14 @@ export function PasswordResetForm({
     setError(undefined);
     setDone(undefined);
     startTransition(async () => {
-      const result = await resetUserPasswordAction(userId, { password });
+      const result = await resetUserPasswordAction(userId, {
+        password,
+        revokeTokens,
+      });
       if (result.ok) {
         setPassword("");
         setDone(
-          isSelf
-            ? "パスワードを再設定しました"
-            : "パスワードを再設定しました。このユーザーのログイン中のセッションは終了しました",
+          `パスワードを再設定しました。このユーザーのログイン中のセッションは終了しました${revokeTokens ? "（API トークンもすべて失効しました）" : ""}`,
         );
       } else {
         setError(result.fieldErrors?.password?.[0] ?? result.error);
@@ -225,8 +230,18 @@ export function PasswordResetForm({
       </div>
       <p id="user-new-password-hint" className="text-xs text-muted-foreground">
         {USER_LIMITS.passwordMin}
-        文字以上。設定したパスワードは本人に伝えてください
+        文字以上。設定したパスワードは本人に伝えてください。このユーザーのログイン中のセッションはすべて終了します
+        {isSelf && "（自分自身のときは、再設定後にログイン画面へ戻ります）"}
       </p>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="size-4"
+          checked={revokeTokens}
+          onChange={(event) => setRevokeTokens(event.target.checked)}
+        />
+        API トークンもすべて失効する
+      </label>
       <Message error={error} done={done} />
     </form>
   );
