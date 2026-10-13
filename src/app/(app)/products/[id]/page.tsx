@@ -121,6 +121,12 @@ export default async function ProductDetailPage({
             編集する
           </Link>
         )}
+        <Link
+          href={`/stock/${product.id}`}
+          className={buttonVariants({ variant: "outline" })}
+        >
+          入出庫履歴
+        </Link>
         {can(user.role, "master:deactivate") && (
           <ProductActiveToggle
             id={product.id}

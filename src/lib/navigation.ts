@@ -19,7 +19,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "取引先", href: "/partners", permission: "view", ready: false },
   { label: "受注", href: "/sales-orders", permission: "view", ready: false },
   { label: "発注", href: "/purchase-orders", permission: "view", ready: false },
-  { label: "在庫", href: "/stock", permission: "view", ready: false },
+  { label: "在庫", href: "/stock", permission: "view", ready: true },
   {
     label: "ユーザー管理",
     href: "/users",
