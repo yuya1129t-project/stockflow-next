@@ -75,7 +75,7 @@ export function OrderLinesEditor({
         {fields.map((field, index) => {
           const rowErrors = errors.lines?.[index];
           const id = (name: string) => `${idPrefix}-line-${index}-${name}`;
-          const product = byId.get(lines[index]?.productId ?? "");
+          const product = byId.get(String(lines[index]?.productId ?? ""));
           const result = parsed[index];
           const amount = result?.success ? lineAmount(result.data) : null;
           const productField = register(`lines.${index}.productId`, {

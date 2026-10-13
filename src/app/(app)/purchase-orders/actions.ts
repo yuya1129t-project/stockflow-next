@@ -11,6 +11,7 @@ import { redirect } from "next/navigation";
 
 import { checkActionPermission } from "@/lib/auth/guards";
 import { getPrisma } from "@/lib/db";
+import { isValidDbId } from "@/lib/orders/schema";
 import {
   changePurchaseOrderStatus,
   createPurchaseOrder,
@@ -47,7 +48,7 @@ export async function updatePurchaseOrderAction(
 ): Promise<PurchaseOrderMutationError> {
   const check = await checkActionPermission("order:edit");
   if (!check.ok) return check;
-  if (!Number.isSafeInteger(id)) return NOT_FOUND;
+  if (!isValidDbId(id)) return NOT_FOUND;
   const result = await updatePurchaseOrder(
     getPrisma(),
     check.user,
@@ -60,19 +61,24 @@ export async function updatePurchaseOrderAction(
   redirect(`/purchase-orders/${id}?saved=updated`);
 }
 
-/** ステータス変更。入荷では在庫が変わるので、在庫・商品の画面も最新にする */
+/**
+ * ステータス変更。expectedUpdatedAt は詳細画面に表示した時点の updatedAt（変わっていれば変更しない）。
+ * 入荷では在庫が変わるので、在庫・商品の画面も最新にする
+ */
 export async function changePurchaseOrderStatusAction(
   id: number,
   to: string,
+  expectedUpdatedAt: string,
 ): Promise<{ ok: true } | PurchaseOrderMutationError> {
   const check = await checkActionPermission("order:edit");
   if (!check.ok) return check;
-  if (!Number.isSafeInteger(id)) return NOT_FOUND;
+  if (!isValidDbId(id)) return NOT_FOUND;
   const result = await changePurchaseOrderStatus(
     getPrisma(),
     check.user,
     id,
     to,
+    expectedUpdatedAt,
   );
   if (!result.ok) return result;
   refreshPurchaseOrderPages();

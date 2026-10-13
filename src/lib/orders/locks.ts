@@ -7,8 +7,16 @@
  *   「伝票を作成する」と「その役割を外す種別変更」が同時に走っても、片方は他方の確定を待ってから判定する
  * - 商品: 存在と有効を検査する（無効な商品は新規の受注・発注で選べない。spec §3）。無効化（商品の UPDATE）と競合する。
  *   ロックは id の順にまとめて 1 回で取る（在庫の記録 src/lib/stock/movements.ts と同じ順番。デッドロックを避ける）
+ *
+ * 注意（受注の出荷・発注の入荷など、在庫を記録するトランザクション）:
+ * lockProductsForLines（FOR SHARE）は、同じトランザクションで在庫の記録（lockProductsForStock／recordStockMovements の
+ * FOR NO KEY UPDATE）と併用しない。FOR SHARE を持った 2 本が同じ商品で FOR NO KEY UPDATE への引き上げを互いに待ち、
+ * デッドロックする。withStockTransaction の tx で呼ぶと例外にしている。在庫を記録するトランザクションで商品の有効などを
+ * 確かめたいときは、lockProductsForStock(tx, 全商品) の結果（isActive・code・name を含む）で検査してから、
+ * 同じ tx で recordStockMovements を呼ぶ（同じ強さのロックを取り直すだけなのでデッドロックしない）
  */
 import { Prisma } from "@/generated/prisma/client";
+import { isStockTransaction } from "@/lib/stock/movements";
 import {
   hasPartnerRole,
   type PartnerKind,
@@ -74,11 +82,22 @@ export interface LockedProduct {
   isActive: boolean;
 }
 
-/** 明細の商品の行を id の順に FOR SHARE でロックして読む（存在しない商品は含まれない） */
+/**
+ * 明細の商品の行を id の順に FOR SHARE でロックして読む（存在しない商品は含まれない）。
+ *
+ * 伝票の作成・編集（在庫を記録しないトランザクション）専用。在庫を記録するトランザクション（withStockTransaction の tx）
+ * では使わない（ロックの引き上げでデッドロックするため。ファイル冒頭の注意を参照）。その tx で呼ぶと例外にする。
+ * 在庫を記録するトランザクションで商品を検査するときは lockProductsForStock の結果を使う
+ */
 export async function lockProductsForLines(
   tx: Prisma.TransactionClient,
   productIds: readonly number[],
 ): Promise<Map<number, LockedProduct>> {
+  if (isStockTransaction(tx)) {
+    throw new Error(
+      "lockProductsForLines（FOR SHARE）は在庫を記録するトランザクションでは使えません（デッドロックするため）。lockProductsForStock の結果で検査してください",
+    );
+  }
   const ids = [...new Set(productIds)].sort((a, b) => a - b);
   if (ids.length === 0) return new Map();
   const rows = await tx.$queryRaw<LockedProduct[]>`

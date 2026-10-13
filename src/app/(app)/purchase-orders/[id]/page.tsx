@@ -219,6 +219,7 @@ export default async function PurchaseOrderDetailPage({
               <PurchaseOrderStatusActions
                 id={order.id}
                 number={order.number}
+                updatedAt={order.updatedAt.toISOString()}
                 targets={targets}
               />
             )}

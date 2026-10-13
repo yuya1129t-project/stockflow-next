@@ -33,9 +33,29 @@ export const ORDER_LINE_LIMITS = {
   note: 500,
 } as const;
 
-/** ID（選択式の項目。正の整数の文字列） */
+/** DB の ID（int）の上限 */
+export const DB_ID_MAX = 2_147_483_647;
+
+/** DB の ID として使える値か（1 以上 int の上限以下の整数）。範囲外の値で DB の例外にしないために使う */
+export function isValidDbId(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 1 &&
+    value <= DB_ID_MAX
+  );
+}
+
+/** 文字列か数値（JSON の number。REST API 用）を受け取り、文字列にそろえる */
+function stringOrNumber(message: string) {
+  return z
+    .union([z.string(), z.number()], { error: message })
+    .transform((value) => (typeof value === "number" ? String(value) : value));
+}
+
+/** ID（選択式の項目。正の整数の文字列か数値。9 桁まで＝ DB の int の範囲内） */
 export function idSchema(requiredMessage: string) {
-  return z.string({ error: requiredMessage }).transform((value, ctx) => {
+  return stringOrNumber(requiredMessage).transform((value, ctx) => {
     const trimmed = value.trim();
     if (!/^\d{1,9}$/.test(trimmed) || Number(trimmed) < 1) {
       ctx.addIssue({ code: "custom", message: requiredMessage });
@@ -45,11 +65,13 @@ export function idSchema(requiredMessage: string) {
   });
 }
 
-/** min 以上 max 以下の整数（文字列で受け取って数値にする。全角数字・3 桁区切りも受け付ける） */
+/**
+ * min 以上 max 以下の整数（文字列か数値で受け取って数値にする。全角数字・3 桁区切りも受け付ける）。
+ * 数値（JSON の number）は REST API（#11）から使うため
+ */
 function integerSchema(label: string, min: 0 | 1, max: number) {
-  return z
-    .string({ error: `${label}を入力してください` })
-    .transform((value, ctx) => {
+  return stringOrNumber(`${label}を入力してください`).transform(
+    (value, ctx) => {
       const normalized = normalizeDigits(value);
       if (normalized === "") {
         ctx.addIssue({ code: "custom", message: `${label}を入力してください` });
@@ -71,7 +93,8 @@ function integerSchema(label: string, min: 0 | 1, max: number) {
         return z.NEVER;
       }
       return number;
-    });
+    },
+  );
 }
 
 export const orderLineSchema = z.object({

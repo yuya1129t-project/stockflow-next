@@ -3,15 +3,15 @@
  * 前提: pnpm db:test:reset でテスト用 DB にマイグレーションとシードを適用済み
  *
  * シードのデータは書き換えない。このファイル専用の取引先・商品（コードが ZO- で始まる）を作り、発注はその仕入先で作る。
- * 終了時に 発注（明細は Cascade）→ 入出庫 → 操作履歴 → 商品・取引先 の順で削除し、
- * 採番テーブル（document_sequence の PO）を開始時の状態に戻す（シードの結合テストが番号と採番表の一致を確かめるため）
+ * 開始時と終了時に 発注（明細は Cascade）→ 入出庫 → 操作履歴 → 商品・取引先 の順で削除し、
+ * 採番テーブル（document_sequence の PO）を残っている発注の番号に合わせる（シードの結合テストが番号と採番表の一致を確かめるため）
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import type { SessionUser } from "@/lib/auth/session";
 import { todayInTokyo } from "@/lib/orders/dates";
-import { lockPartnerForRole } from "@/lib/orders/locks";
+import { lockPartnerForRole, lockProductsForLines } from "@/lib/orders/locks";
 import { nextDocumentNumber } from "@/lib/orders/numbering";
 import { PARTNER_TARGET_TYPE, updatePartner } from "@/lib/partners/service";
 import {
@@ -26,9 +26,15 @@ import {
   createPurchaseOrder,
   PURCHASE_ORDER_STATUS_ACTION,
   PURCHASE_ORDER_TARGET_TYPE,
+  STATUS_CONFLICT_MESSAGE,
   updatePurchaseOrder,
 } from "@/lib/purchase-orders/service";
-import { getStock, getStocks } from "@/lib/stock/movements";
+import {
+  getStock,
+  getStocks,
+  recordStockMovements,
+  withStockTransaction,
+} from "@/lib/stock/movements";
 import { listStockMovements } from "@/lib/stock/queries";
 
 import { DEMO_USERS } from "../../prisma/seed-data";
@@ -50,9 +56,6 @@ const MISSING_USER: SessionUser = {
 const PREFIX = "ZO-";
 let sequence = 0;
 const nextCode = () => `${PREFIX}${String(++sequence).padStart(4, "0")}`;
-
-/** 開始時の採番テーブル（PO）。終了時に戻す */
-let sequenceSnapshot: { date: Date; lastNumber: number }[] = [];
 
 async function testIds() {
   const [partners, products] = await Promise.all([
@@ -100,26 +103,27 @@ async function cleanUp() {
   await prisma.partner.deleteMany({ where: { id: { in: partnerIds } } });
 }
 
-async function restoreSequences() {
-  const current = await prisma.documentSequence.findMany({
-    where: { kind: "PO" },
-  });
-  const before = new Map(
-    sequenceSnapshot.map((s) => [s.date.getTime(), s.lastNumber]),
-  );
-  for (const row of current) {
-    const lastNumber = before.get(row.date.getTime());
-    if (lastNumber === undefined) {
-      await prisma.documentSequence.delete({
-        where: { kind_date: { kind: "PO", date: row.date } },
-      });
-    } else if (lastNumber !== row.lastNumber) {
-      await prisma.documentSequence.update({
-        where: { kind_date: { kind: "PO", date: row.date } },
-        data: { lastNumber },
-      });
-    }
-  }
+/**
+ * 採番テーブル（PO）を、残っている発注の番号に合わせる（日付ごとに最大の連番。発注のない日の行は消す）。
+ * シードの採番と同じ状態に戻る。開始時にも実行するので、前回の実行が途中で止まって進んだままでも直る
+ */
+async function syncPoSequences() {
+  await prisma.$executeRaw`
+    DELETE FROM "document_sequence" ds
+    WHERE ds."kind" = 'PO'
+      AND NOT EXISTS (
+        SELECT 1 FROM "purchase_order" po WHERE po."orderDate" = ds."date"
+      )`;
+  await prisma.$executeRaw`
+    UPDATE "document_sequence" ds
+    SET "lastNumber" = m."last"
+    FROM (
+      SELECT "orderDate", MAX(split_part("number", '-', 3)::int) AS "last"
+      FROM "purchase_order"
+      GROUP BY "orderDate"
+    ) m
+    WHERE ds."kind" = 'PO' AND ds."date" = m."orderDate"
+      AND ds."lastNumber" <> m."last"`;
 }
 
 beforeAll(async () => {
@@ -128,17 +132,14 @@ beforeAll(async () => {
     throw new Error(`テスト用 DB にシードが入っていません。${SETUP_HINT}`);
   }
   await cleanUp();
-  sequenceSnapshot = await prisma.documentSequence.findMany({
-    where: { kind: "PO" },
-    select: { date: true, lastNumber: true },
-  });
+  await syncPoSequences();
 });
 
 afterAll(async () => {
   if (!prisma) return;
   try {
     await cleanUp();
-    await restoreSequences();
+    await syncPoSequences();
   } finally {
     await prisma.$disconnect();
   }
@@ -207,8 +208,33 @@ async function createOk(
   return result.data;
 }
 
+/** 今の updatedAt（詳細画面に表示した時点の値として送る）。発注がなければ適当な値 */
+async function versionOf(id: number): Promise<string> {
+  const order = await prisma.purchaseOrder.findUnique({
+    where: { id },
+    select: { updatedAt: true },
+  });
+  return (order?.updatedAt ?? new Date(0)).toISOString();
+}
+
+/** ステータス変更（version を省くと今の updatedAt を送る＝画面が最新の場合） */
+async function changeStatus(
+  user: SessionUser | null,
+  id: number,
+  to: unknown,
+  version?: string,
+) {
+  return changePurchaseOrderStatus(
+    prisma,
+    user,
+    id,
+    to,
+    version ?? (await versionOf(id)),
+  );
+}
+
 async function statusOk(id: number, to: string) {
-  const result = await changePurchaseOrderStatus(prisma, STAFF, id, to);
+  const result = await changeStatus(STAFF, id, to);
   if (!result.ok) throw new Error(`ステータス変更に失敗: ${result.error}`);
   return result.data;
 }
@@ -824,9 +850,7 @@ describe("ステータス遷移", () => {
   it("明細が 0 行の draft は ordered にできない", async () => {
     const supplier = await createPartner();
     const { id } = await createOk(supplier.id, []);
-    expect(
-      await changePurchaseOrderStatus(prisma, STAFF, id, "ordered"),
-    ).toEqual({
+    expect(await changeStatus(STAFF, id, "ordered")).toEqual({
       ok: false,
       error: "明細が 1 行もないため、発注済にできません",
     });
@@ -929,7 +953,7 @@ describe("ステータス遷移", () => {
         tx.$queryRaw`SELECT "id" FROM "purchase_order" WHERE "id" = ${id} FOR NO KEY UPDATE`,
     );
     const results = [1, 2].map(() =>
-      settle(changePurchaseOrderStatus(prisma, STAFF, id, "received")),
+      settle(changeStatus(STAFF, id, "received")),
     );
     // 同じ行を待つ 2 本目は、PostgreSQL では 1 本目の待ちの後ろに並ぶ（待つ相手は 1 本目になる）
     await waitUntil(
@@ -973,9 +997,7 @@ describe("ステータス遷移", () => {
       to: "cancelled",
     });
     for (const to of ["ordered", "received", "cancelled"]) {
-      expect(
-        await changePurchaseOrderStatus(prisma, STAFF, draft.id, to),
-      ).toEqual({
+      expect(await changeStatus(STAFF, draft.id, to)).toEqual({
         ok: false,
         error: "この発注は「取消」のため、ステータスを変更できません",
       });
@@ -990,17 +1012,13 @@ describe("ステータス遷移", () => {
     const received = await createOk(supplier.id, [[product.id, 2, 10]]);
     await statusOk(received.id, "ordered");
     await statusOk(received.id, "received");
-    expect(
-      await changePurchaseOrderStatus(prisma, STAFF, received.id, "cancelled"),
-    ).toEqual({
+    expect(await changeStatus(STAFF, received.id, "cancelled")).toEqual({
       ok: false,
       error: "この発注は「入荷済」のため、ステータスを変更できません",
     });
     // draft から received への飛び越しも不可
     const skip = await createOk(supplier.id, [[product.id, 1, 10]]);
-    expect(
-      await changePurchaseOrderStatus(prisma, STAFF, skip.id, "received"),
-    ).toEqual({
+    expect(await changeStatus(STAFF, skip.id, "received")).toEqual({
       ok: false,
       error: "「下書き」から「入荷済」には変更できません",
     });
@@ -1012,42 +1030,320 @@ describe("ステータス遷移", () => {
     const product = await createProduct();
     const { id } = await createOk(supplier.id, [[product.id, 1, 10]]);
     for (const to of ["draft", "shipped", 1, null]) {
-      expect(await changePurchaseOrderStatus(prisma, STAFF, id, to)).toEqual({
+      expect(await changeStatus(STAFF, id, to)).toEqual({
         ok: false,
         error: "変更先のステータスが正しくありません",
       });
     }
-    expect(
-      await changePurchaseOrderStatus(prisma, STAFF, 99_999_999, "ordered"),
-    ).toEqual({ ok: false, error: "発注が見つかりません" });
-    expect(
-      await changePurchaseOrderStatus(prisma, STAFF, 99_999_999, "received"),
-    ).toEqual({ ok: false, error: "発注が見つかりません" });
-    expect(
-      await changePurchaseOrderStatus(prisma, VIEWER, id, "ordered"),
-    ).toEqual({
+    expect(await changeStatus(STAFF, 99_999_999, "ordered")).toEqual({
+      ok: false,
+      error: "発注が見つかりません",
+    });
+    expect(await changeStatus(STAFF, 99_999_999, "received")).toEqual({
+      ok: false,
+      error: "発注が見つかりません",
+    });
+    expect(await changeStatus(VIEWER, id, "ordered")).toEqual({
       ok: false,
       error: "この操作を行う権限がありません",
     });
     expect((await getPurchaseOrder(prisma, id))!.status).toBe("draft");
   });
 
+  it("int の範囲外の id は例外ではなく「見つかりません」", async () => {
+    const supplier = await createPartner();
+    const product = await createProduct();
+    const huge = 2 ** 40;
+    expect(
+      await changeStatus(STAFF, huge, "ordered", new Date().toISOString()),
+    ).toEqual({
+      ok: false,
+      error: "発注が見つかりません",
+    });
+    expect(
+      await updatePurchaseOrder(
+        prisma,
+        STAFF,
+        huge,
+        input(supplier.id, [[product.id, 1, 10]]),
+        new Date().toISOString(),
+      ),
+    ).toEqual({ ok: false, error: "発注が見つかりません" });
+  });
+
   it("途中で失敗したら全体が取り消される（存在しないユーザーで入出庫・操作履歴の外部キー違反）", async () => {
     const supplier = await createPartner();
     const product = await createProduct();
     const { id } = await createOk(supplier.id, [[product.id, 5, 10]]);
-    await expect(
-      changePurchaseOrderStatus(prisma, MISSING_USER, id, "ordered"),
-    ).rejects.toThrow();
+    await expect(changeStatus(MISSING_USER, id, "ordered")).rejects.toThrow();
     expect((await getPurchaseOrder(prisma, id))!.status).toBe("draft");
 
     await statusOk(id, "ordered");
-    await expect(
-      changePurchaseOrderStatus(prisma, MISSING_USER, id, "received"),
-    ).rejects.toThrow();
+    await expect(changeStatus(MISSING_USER, id, "received")).rejects.toThrow();
     expect((await getPurchaseOrder(prisma, id))!.status).toBe("ordered");
     expect(await getStock(prisma, product.id)).toBe(0);
     expect(await auditLogsOf(id)).toHaveLength(2);
+  });
+});
+
+describe("ステータス変更の競合（詳細画面に表示した時点の updatedAt）", () => {
+  it("表示した後に明細が編集されていたら発注済にしない。最新を表示し直せば変更できる", async () => {
+    const supplier = await createPartner();
+    const product = await createProduct();
+    const { id } = await createOk(supplier.id, [[product.id, 1, 100]]);
+    const shown = await versionOf(id);
+    // 他の人が明細を編集する
+    expect(
+      (
+        await updatePurchaseOrder(
+          prisma,
+          STAFF,
+          id,
+          input(supplier.id, [[product.id, 9, 100]]),
+          shown,
+        )
+      ).ok,
+    ).toBe(true);
+    expect(await changeStatus(STAFF, id, "ordered", shown)).toEqual({
+      ok: false,
+      error: STATUS_CONFLICT_MESSAGE,
+      conflict: true,
+    });
+    expect(await changeStatus(STAFF, id, "cancelled", shown)).toMatchObject({
+      conflict: true,
+    });
+    expect((await getPurchaseOrder(prisma, id))!.status).toBe("draft");
+    expect((await changeStatus(STAFF, id, "ordered")).ok).toBe(true);
+    expect(
+      (await auditLogsOf(id)).filter(
+        (l) => l.action === PURCHASE_ORDER_STATUS_ACTION,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("入荷も、表示した後に更新されていたら入庫しない。形式の違う値も競合", async () => {
+    const supplier = await createPartner();
+    const product = await createProduct();
+    const { id } = await createOk(supplier.id, [[product.id, 4, 100]]);
+    await statusOk(id, "ordered");
+    const shown = await versionOf(id);
+    // 別の操作で発注が更新された（updatedAt が変わる）
+    await prisma.purchaseOrder.update({
+      where: { id },
+      data: { note: "別の更新" },
+    });
+    expect(await changeStatus(STAFF, id, "received", shown)).toEqual({
+      ok: false,
+      error: STATUS_CONFLICT_MESSAGE,
+      conflict: true,
+    });
+    for (const version of ["x", undefined, 0]) {
+      expect(
+        await changePurchaseOrderStatus(prisma, STAFF, id, "received", version),
+      ).toMatchObject({ conflict: true });
+    }
+    expect((await getPurchaseOrder(prisma, id))!.status).toBe("ordered");
+    expect(await getStock(prisma, product.id)).toBe(0);
+    expect((await changeStatus(STAFF, id, "received")).ok).toBe(true);
+    expect(await getStock(prisma, product.id)).toBe(4);
+  });
+});
+
+describe("同時実行（発注・商品の行ロック）", () => {
+  /** 発注の行を別のトランザクションでロックし続ける */
+  function holdOrder(id: number) {
+    return hold(
+      (tx) =>
+        tx.$queryRaw`SELECT "id" FROM "purchase_order" WHERE "id" = ${id} FOR NO KEY UPDATE`,
+    );
+  }
+
+  it("A: 入荷と取消が同時でも、先に確定した入荷だけが通り、在庫は 1 回だけ増える", async () => {
+    const supplier = await createPartner();
+    const product = await createProduct();
+    const { id } = await createOk(supplier.id, [[product.id, 5, 10]]);
+    await statusOk(id, "ordered");
+    const shown = await versionOf(id);
+
+    const holder = await holdOrder(id);
+    const receive = settle(changeStatus(STAFF, id, "received", shown));
+    await waitUntil(
+      "入荷がロック待ち",
+      async () => (await blockedSessionCount()) >= 1,
+    );
+    const cancel = settle(changeStatus(STAFF, id, "cancelled", shown));
+    await waitUntil(
+      "取消もロック待ち",
+      async () => (await blockedSessionCount()) >= 2,
+    );
+    await holder.release();
+
+    const [received, cancelled] = await Promise.all([receive, cancel]);
+    expect(received.ok && received.value.ok).toBe(true);
+    expect(cancelled.ok && cancelled.value).toEqual({
+      ok: false,
+      error: "この発注は「入荷済」のため、ステータスを変更できません",
+    });
+    expect((await getPurchaseOrder(prisma, id))!.status).toBe("received");
+    expect(await getStock(prisma, product.id)).toBe(5);
+  });
+
+  it("B1: 明細を 0 行にする編集が先に確定したら、待っていた発注済への変更は通らない", async () => {
+    const supplier = await createPartner();
+    const product = await createProduct();
+    const { id } = await createOk(supplier.id, [[product.id, 1, 10]]);
+    const shown = await versionOf(id);
+
+    const holder = await holdOrder(id);
+    const edit = settle(
+      updatePurchaseOrder(prisma, STAFF, id, input(supplier.id, []), shown),
+    );
+    await waitUntil(
+      "編集がロック待ち",
+      async () => (await blockedSessionCount()) >= 1,
+    );
+    const order = settle(changeStatus(STAFF, id, "ordered", shown));
+    await waitUntil(
+      "発注済への変更もロック待ち",
+      async () => (await blockedSessionCount()) >= 2,
+    );
+    await holder.release();
+
+    const [edited, ordered] = await Promise.all([edit, order]);
+    expect(edited.ok && edited.value.ok).toBe(true);
+    expect(ordered.ok && ordered.value.ok).toBe(false);
+    const after = await getPurchaseOrder(prisma, id);
+    expect(after!.status).toBe("draft");
+    expect(after!.lines).toHaveLength(0);
+  });
+
+  it("B2: 発注済への変更が先に確定したら、待っていた編集は明細を書き換えない", async () => {
+    const supplier = await createPartner();
+    const product = await createProduct();
+    const { id } = await createOk(supplier.id, [[product.id, 1, 10]]);
+    const shown = await versionOf(id);
+
+    const holder = await holdOrder(id);
+    const order = settle(changeStatus(STAFF, id, "ordered", shown));
+    await waitUntil(
+      "発注済への変更がロック待ち",
+      async () => (await blockedSessionCount()) >= 1,
+    );
+    const edit = settle(
+      updatePurchaseOrder(
+        prisma,
+        STAFF,
+        id,
+        input(supplier.id, [[product.id, 9, 10]]),
+        shown,
+      ),
+    );
+    await waitUntil(
+      "編集もロック待ち",
+      async () => (await blockedSessionCount()) >= 2,
+    );
+    await holder.release();
+
+    const [ordered, edited] = await Promise.all([order, edit]);
+    expect(ordered.ok && ordered.value.ok).toBe(true);
+    expect(edited.ok && edited.value).toEqual({
+      ok: false,
+      error:
+        "この発注は「発注済」のため編集できません（編集できるのは下書きだけです）",
+    });
+    const after = await getPurchaseOrder(prisma, id);
+    expect(after!.status).toBe("ordered");
+    expect(after!.lines.map((l) => l.quantity)).toEqual([1]);
+  });
+
+  it("C: 商品の無効化が確定するまで作成は待ち、確定後は無効な商品として拒否する", async () => {
+    const supplier = await createPartner();
+    const product = await createProduct();
+    const holder = await hold((tx) =>
+      tx.product.update({
+        where: { id: product.id },
+        data: { isActive: false },
+      }),
+    );
+    const create = settle(
+      createPurchaseOrder(
+        prisma,
+        STAFF,
+        input(supplier.id, [[product.id, 1, 10]]),
+      ),
+    );
+    await waitUntil(
+      "作成が商品の行のロックを待つ",
+      async () => (await sessionsBlockedBy(holder.pid)) >= 1,
+    );
+    await holder.release();
+    const result = await create;
+    expect(result.ok && !result.value.ok && result.value.fieldErrors).toEqual({
+      "lines.0.productId": [
+        `${product.code}「${product.name}」は無効になっているため選べません`,
+      ],
+    });
+  });
+
+  it("D: 作成と在庫の記録が同じ 2 商品で重なってもデッドロックしない（商品のロックは id 順）", async () => {
+    const supplier = await createPartner();
+    const a = await createProduct();
+    const b = await createProduct();
+    const [low, high] = a.id < b.id ? [a, b] : [b, a];
+    // id の大きい商品を別のトランザクションでロックしておく
+    const holder = await hold(
+      (tx) =>
+        tx.$queryRaw`SELECT "id" FROM "product" WHERE "id" = ${high.id} FOR NO KEY UPDATE`,
+    );
+    const create = settle(
+      createPurchaseOrder(
+        prisma,
+        STAFF,
+        input(supplier.id, [
+          [low.id, 1, 10],
+          [high.id, 1, 10],
+        ]),
+      ),
+    );
+    await waitUntil(
+      "作成がロック待ち",
+      async () => (await blockedSessionCount()) >= 1,
+    );
+    const record = settle(
+      withStockTransaction(
+        prisma,
+        (tx) =>
+          recordStockMovements(tx, STAFF.id, [
+            { productId: low.id, type: "in", quantity: 1 },
+            { productId: high.id, type: "in", quantity: 1 },
+          ]),
+        { timeout: TX_TIMEOUT },
+      ),
+    );
+    await waitUntil(
+      "在庫の記録もロック待ち",
+      async () => (await blockedSessionCount()) >= 2,
+    );
+    await holder.release();
+
+    const [created, recorded] = await Promise.all([create, record]);
+    expect(created.ok && created.value.ok).toBe(true);
+    expect(recorded.ok).toBe(true);
+    expect(await getStock(prisma, low.id)).toBe(1);
+  });
+
+  it("lockProductsForLines（FOR SHARE）は在庫を記録するトランザクションでは使えない（昇格のデッドロックを防ぐ）", async () => {
+    const product = await createProduct();
+    await expect(
+      withStockTransaction(prisma, (tx) =>
+        lockProductsForLines(tx, [product.id]),
+      ),
+    ).rejects.toThrow("在庫を記録するトランザクションでは使えません");
+    // 通常のトランザクションでは使える
+    const locked = await prisma.$transaction((tx) =>
+      lockProductsForLines(tx, [product.id]),
+    );
+    expect(locked.get(product.id)?.code).toBe(product.code);
   });
 });
 

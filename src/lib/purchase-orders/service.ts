@@ -33,6 +33,12 @@ import {
 } from "@/lib/orders/locks";
 import { nextDocumentNumber } from "@/lib/orders/numbering";
 import {
+  conflictMessage,
+  isSameVersion,
+  parseExpectedUpdatedAt,
+} from "@/lib/orders/versions";
+import {
+  isValidDbId,
   orderFieldErrors,
   type OrderFieldErrors,
   type OrderLineInput,
@@ -76,11 +82,17 @@ const NOT_FOUND: PurchaseOrderMutationError = {
   ok: false,
   error: "発注が見つかりません",
 };
-export const CONFLICT_MESSAGE =
-  "他の人がこの発注を更新しました。保存していません。画面を開き直して最新の内容を確認してください";
+export const CONFLICT_MESSAGE = conflictMessage("発注", "保存していません");
+export const STATUS_CONFLICT_MESSAGE = conflictMessage(
+  "発注",
+  "ステータスは変更していません",
+);
 
-/** 入荷のトランザクションの timeout（商品のロック待ちを含む。Prisma の既定は 5 秒） */
-const RECEIVE_TIMEOUT_MS = 15_000;
+/**
+ * トランザクションの timeout（作成・編集・ステータス変更・入荷で共通）。取引先・商品・発注の行のロック待ちを含む
+ * （在庫の記録や CSV 取込が同じ商品のロックを持っている間は待つ）。Prisma の既定は 5 秒
+ */
+const TX_TIMEOUT_MS = 15_000;
 
 function checkRole(
   user: SessionUser | null,
@@ -198,6 +210,7 @@ export async function createPurchaseOrder(
       });
       return { ok: true, data: { id: created.id, number } };
     },
+    { timeout: TX_TIMEOUT_MS },
   );
 }
 
@@ -277,94 +290,99 @@ export async function updatePurchaseOrder(
   const parsed = validate(input);
   if (!parsed.ok) return parsed;
   const { data, amounts } = parsed;
-  const expected =
-    typeof expectedUpdatedAt === "string" ? new Date(expectedUpdatedAt) : null;
-  if (!expected || Number.isNaN(expected.getTime())) {
-    return { ok: false, error: CONFLICT_MESSAGE, conflict: true };
-  }
+  if (!isValidDbId(id)) return NOT_FOUND;
+  const expected = parseExpectedUpdatedAt(expectedUpdatedAt);
+  if (!expected) return { ok: false, error: CONFLICT_MESSAGE, conflict: true };
 
-  return db.$transaction(async (tx): Promise<PurchaseOrderMutationResult> => {
-    if (!(await lockPurchaseOrder(tx, id))) return NOT_FOUND;
-    const before = await tx.purchaseOrder.findUniqueOrThrow({
-      where: { id },
-      include: {
-        supplier: { select: { id: true, code: true } },
-        lines: { orderBy: { id: "asc" } },
-      },
-    });
-    if (!isPurchaseOrderEditable(before.status)) {
-      return {
-        ok: false,
-        error: `この発注は「${PURCHASE_ORDER_STATUS_LABELS[before.status]}」のため編集できません（編集できるのは下書きだけです）`,
-      };
-    }
-    if (before.updatedAt.getTime() !== expected.getTime()) {
-      return { ok: false, error: CONFLICT_MESSAGE, conflict: true };
-    }
-    const dateError = checkExpectedDate(before.orderDate, data.expectedDate);
-    if (dateError) return fieldError("expectedDate", dateError);
+  return db.$transaction(
+    async (tx): Promise<PurchaseOrderMutationResult> => {
+      if (!(await lockPurchaseOrder(tx, id))) return NOT_FOUND;
+      const before = await tx.purchaseOrder.findUniqueOrThrow({
+        where: { id },
+        include: {
+          supplier: { select: { id: true, code: true } },
+          lines: { orderBy: { id: "asc" } },
+        },
+      });
+      if (!isPurchaseOrderEditable(before.status)) {
+        return {
+          ok: false,
+          error: `この発注は「${PURCHASE_ORDER_STATUS_LABELS[before.status]}」のため編集できません（編集できるのは下書きだけです）`,
+        };
+      }
+      if (!isSameVersion(before.updatedAt, expected)) {
+        return { ok: false, error: CONFLICT_MESSAGE, conflict: true };
+      }
+      const dateError = checkExpectedDate(before.orderDate, data.expectedDate);
+      if (dateError) return fieldError("expectedDate", dateError);
 
-    const supplier = await lockPartnerForRole(tx, data.supplierId, "supplier");
-    if (!supplier.ok) return fieldError("supplierId", supplier.message);
-    const products = await lockProductsForLines(
-      tx,
-      data.lines.map((l) => l.productId),
-    );
-    // もとから明細にあった商品は、その後に無効になっていても残せる（新しく選ぶ商品だけ有効を求める）
-    const lineErrors = checkLineProducts(
-      data.lines,
-      products,
-      new Set(before.lines.map((l) => l.productId)),
-    );
-    if (lineErrors) {
-      return {
-        ok: false,
-        error: INVALID_INPUT_MESSAGE,
-        fieldErrors: lineErrors,
-      };
-    }
+      const supplier = await lockPartnerForRole(
+        tx,
+        data.supplierId,
+        "supplier",
+      );
+      if (!supplier.ok) return fieldError("supplierId", supplier.message);
+      const products = await lockProductsForLines(
+        tx,
+        data.lines.map((l) => l.productId),
+      );
+      // もとから明細にあった商品は、その後に無効になっていても残せる（新しく選ぶ商品だけ有効を求める）
+      const lineErrors = checkLineProducts(
+        data.lines,
+        products,
+        new Set(before.lines.map((l) => l.productId)),
+      );
+      if (lineErrors) {
+        return {
+          ok: false,
+          error: INVALID_INPUT_MESSAGE,
+          fieldErrors: lineErrors,
+        };
+      }
 
-    const changes = describePurchaseOrderChanges(
-      {
-        supplier: before.supplier,
-        expectedDate: before.expectedDate,
-        note: before.note,
-        lines: before.lines,
-        total: before.total,
-      },
-      {
-        supplier: { id: supplier.partner.id, code: supplier.partner.code },
-        expectedDate: data.expectedDate,
-        note: data.note,
-        lines: data.lines,
-        total: amounts.total,
-      },
-    );
-    // 変更がなければ何もしない（操作履歴も残さない）
-    if (changes.length === 0) return { ok: true, data: null };
+      const changes = describePurchaseOrderChanges(
+        {
+          supplier: before.supplier,
+          expectedDate: before.expectedDate,
+          note: before.note,
+          lines: before.lines,
+          total: before.total,
+        },
+        {
+          supplier: { id: supplier.partner.id, code: supplier.partner.code },
+          expectedDate: data.expectedDate,
+          note: data.note,
+          lines: data.lines,
+          total: amounts.total,
+        },
+      );
+      // 変更がなければ何もしない（操作履歴も残さない）
+      if (changes.length === 0) return { ok: true, data: null };
 
-    await tx.purchaseOrderLine.deleteMany({ where: { purchaseOrderId: id } });
-    await tx.purchaseOrder.update({
-      where: { id },
-      data: {
-        supplierId: data.supplierId,
-        expectedDate: data.expectedDate,
-        note: data.note,
-        ...amounts,
-        lines: { createMany: { data: lineData(data.lines) } },
-      },
-    });
-    await tx.auditLog.create({
-      data: {
-        userId: auth.user.id,
-        action: "update",
-        targetType: PURCHASE_ORDER_TARGET_TYPE,
-        targetId: String(id),
-        summary: `発注 ${before.number} を更新しました（${changes.join("、")}）`,
-      },
-    });
-    return { ok: true, data: null };
-  });
+      await tx.purchaseOrderLine.deleteMany({ where: { purchaseOrderId: id } });
+      await tx.purchaseOrder.update({
+        where: { id },
+        data: {
+          supplierId: data.supplierId,
+          expectedDate: data.expectedDate,
+          note: data.note,
+          ...amounts,
+          lines: { createMany: { data: lineData(data.lines) } },
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          userId: auth.user.id,
+          action: "update",
+          targetType: PURCHASE_ORDER_TARGET_TYPE,
+          targetId: String(id),
+          summary: `発注 ${before.number} を更新しました（${changes.join("、")}）`,
+        },
+      });
+      return { ok: true, data: null };
+    },
+    { timeout: TX_TIMEOUT_MS },
+  );
 }
 
 export interface StatusChangeResult {
@@ -385,20 +403,30 @@ function statusSummary(
 
 /**
  * ステータスを変更する（spec §4）。to は ordered／received／cancelled。
- * received では全明細の入庫（in）を同じトランザクションで記録する
+ * received では全明細の入庫（in）を同じトランザクションで記録する。
+ * expectedUpdatedAt は詳細画面に表示した時点の updatedAt（ISO 8601）。変わっていれば変更しない（競合。
+ * 他の人が編集した、見ていない明細のまま発注済にしないため）。遷移できない状態なら、競合より先にその理由を返す
  */
 export async function changePurchaseOrderStatus(
   db: PrismaClient,
   user: SessionUser | null,
   id: number,
   to: unknown,
+  expectedUpdatedAt: unknown,
 ): Promise<PurchaseOrderMutationResult<StatusChangeResult>> {
   const auth = checkRole(user, "order:edit");
   if (!auth.ok) return auth;
   if (!isPurchaseOrderStatus(to) || to === "draft") {
     return { ok: false, error: "変更先のステータスが正しくありません" };
   }
-  if (to === "received") return receivePurchaseOrder(db, auth.user, id);
+  if (!isValidDbId(id)) return NOT_FOUND;
+  const expected = parseExpectedUpdatedAt(expectedUpdatedAt);
+  if (!expected) {
+    return { ok: false, error: STATUS_CONFLICT_MESSAGE, conflict: true };
+  }
+  if (to === "received") {
+    return receivePurchaseOrder(db, auth.user, id, expected);
+  }
 
   return db.$transaction(
     async (tx): Promise<PurchaseOrderMutationResult<StatusChangeResult>> => {
@@ -408,6 +436,7 @@ export async function changePurchaseOrderStatus(
         select: {
           number: true,
           status: true,
+          updatedAt: true,
           _count: { select: { lines: true } },
         },
       });
@@ -417,6 +446,9 @@ export async function changePurchaseOrderStatus(
         order._count.lines,
       );
       if (!check.ok) return { ok: false, error: check.message };
+      if (!isSameVersion(order.updatedAt, expected)) {
+        return { ok: false, error: STATUS_CONFLICT_MESSAGE, conflict: true };
+      }
       await tx.purchaseOrder.update({ where: { id }, data: { status: to } });
       await tx.auditLog.create({
         data: {
@@ -437,6 +469,7 @@ export async function changePurchaseOrderStatus(
         },
       };
     },
+    { timeout: TX_TIMEOUT_MS },
   );
 }
 
@@ -445,19 +478,25 @@ async function receivePurchaseOrder(
   db: PrismaClient,
   user: SessionUser,
   id: number,
+  expected: Date,
 ): Promise<PurchaseOrderMutationResult<StatusChangeResult>> {
   return withStockTransaction(
     db,
     async (tx): Promise<PurchaseOrderMutationResult<StatusChangeResult>> => {
-      // 条件付き更新で二重入荷を防ぐ（同時に実行された 2 本目は、1 本目の確定後に WHERE を評価し直して 0 件になる）
+      // 条件付き更新で二重入荷を防ぐ（同時に実行された 2 本目は、1 本目の確定後に WHERE を評価し直して 0 件になる）。
+      // 画面に表示した時点の updatedAt も条件に入れる（他の人の変更の後なら 0 件 → 競合）
       const updated = await tx.purchaseOrder.updateMany({
-        where: { id, status: "ordered" },
+        where: { id, status: "ordered", updatedAt: expected },
         data: { status: "received" },
       });
       if (updated.count === 0) {
         const current = await tx.purchaseOrder.findUnique({
           where: { id },
-          select: { status: true, _count: { select: { lines: true } } },
+          select: {
+            status: true,
+            updatedAt: true,
+            _count: { select: { lines: true } },
+          },
         });
         if (!current) return NOT_FOUND;
         const check = checkPurchaseOrderTransition(
@@ -465,12 +504,8 @@ async function receivePurchaseOrder(
           "received",
           current._count.lines,
         );
-        return {
-          ok: false,
-          error: check.ok
-            ? "ステータスを変更できませんでした。画面を開き直してください"
-            : check.message,
-        };
+        if (!check.ok) return { ok: false, error: check.message };
+        return { ok: false, error: STATUS_CONFLICT_MESSAGE, conflict: true };
       }
       const order = await tx.purchaseOrder.findUniqueOrThrow({
         where: { id },
@@ -518,6 +553,6 @@ async function receivePurchaseOrder(
         },
       };
     },
-    { timeout: RECEIVE_TIMEOUT_MS },
+    { timeout: TX_TIMEOUT_MS },
   );
 }

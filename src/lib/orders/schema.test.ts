@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DB_ID_MAX,
+  isValidDbId,
   optionalDateSchema,
   orderFieldErrors,
   orderLineSchema,
@@ -47,6 +49,34 @@ describe("orderLineSchema（明細 1 行）", () => {
       unitPrice: ["単価は0以上の整数で入力してください"],
     });
     expect(errorsOf(orderLineSchema, line("1", "", ""))).toEqual({
+      quantity: ["数量を入力してください"],
+      unitPrice: ["単価を入力してください"],
+    });
+  });
+
+  it("数値（JSON の number。REST API 用）も受け付ける。小数・負・範囲外はエラー", () => {
+    expect(
+      orderLineSchema.parse({ productId: 5, quantity: 10, unitPrice: 0 }),
+    ).toEqual({ productId: 5, quantity: 10, unitPrice: 0 });
+    expect(
+      errorsOf(orderLineSchema, {
+        productId: 2 ** 40,
+        quantity: 1.5,
+        unitPrice: -1,
+      }),
+    ).toEqual({
+      productId: ["商品を選択してください"],
+      quantity: ["数量は1以上の整数で入力してください"],
+      unitPrice: ["単価は0以上の整数で入力してください"],
+    });
+    expect(
+      errorsOf(orderLineSchema, {
+        productId: true,
+        quantity: null,
+        unitPrice: {},
+      }),
+    ).toEqual({
+      productId: ["商品を選択してください"],
       quantity: ["数量を入力してください"],
       unitPrice: ["単価を入力してください"],
     });
@@ -148,5 +178,15 @@ describe("orderNoteSchema（備考）", () => {
       _form: ["備考は500文字以内で入力してください"],
     });
     expect(orderNoteSchema.parse("あ".repeat(500))).toHaveLength(500);
+  });
+});
+
+describe("isValidDbId（DB の int の範囲の ID）", () => {
+  it("1 以上 2,147,483,647 以下の整数だけ", () => {
+    expect(isValidDbId(1)).toBe(true);
+    expect(isValidDbId(DB_ID_MAX)).toBe(true);
+    for (const value of [0, -1, DB_ID_MAX + 1, 2 ** 40, 1.5, NaN, "1", null]) {
+      expect(isValidDbId(value), String(value)).toBe(false);
+    }
   });
 });
