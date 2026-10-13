@@ -1356,7 +1356,12 @@ describe("出荷の同時実行", () => {
 
     const [edited, confirmed] = await Promise.all([edit, confirm]);
     expect(edited.ok && edited.value.ok).toBe(true);
-    expect(confirmed.ok && confirmed.value.ok).toBe(false);
+    // 例外（DB エラー・タイムアウト）ではなく、明細不足の業務エラーで拒否されたこと
+    expect(confirmed.ok).toBe(true);
+    expect(confirmed.ok && confirmed.value).toMatchObject({
+      ok: false,
+      error: "明細が 1 行もないため、確定にできません",
+    });
     const after = await getSalesOrder(prisma, id);
     expect(after!.status).toBe("draft");
     expect(after!.lines).toHaveLength(0);
