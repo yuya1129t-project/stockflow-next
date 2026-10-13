@@ -200,6 +200,11 @@ function sentMessages(): { url: string; body: SlackMessage }[] {
   }));
 }
 
+/** 商品 1 件分の blocks（Slack の自動解析を止める verbatim 付き） */
+function productBlock(text: string) {
+  return { type: "section", text: { type: "mrkdwn", text, verbatim: true } };
+}
+
 async function createProduct({
   stock = 0,
   reorderPoint = 5,
@@ -313,12 +318,16 @@ describe("受注の出荷", () => {
     expect(sent[0].url).toBe(WEBHOOK);
     // a（10 → 3）と b（8 → 7）が発注点を下回った。c（30 → 20）は発注点以上のまま
     expect(sent[0].body.text).toBe(
-      [
-        `発注点を下回った商品が 2 件あります（受注 ${order.number} の出荷）`,
-        `・<${APP_URL}/stock/${a.id}|${a.code} ${a.name}>: 現在庫 3個（発注点 5個・変更前 10個）`,
-        `・<${APP_URL}/stock/${b.id}|${b.code} ${b.name}>: 現在庫 7個（発注点 8個・変更前 8個）`,
-      ].join("\n"),
+      `発注点を下回った商品が 2 件あります（受注 ${order.number} の出荷）`,
     );
+    expect(sent[0].body.blocks.slice(1)).toEqual([
+      productBlock(
+        `<${APP_URL}/stock/${a.id}|${a.code} ${a.name}>\n現在庫 3個（発注点 5個・変更前 10個）`,
+      ),
+      productBlock(
+        `<${APP_URL}/stock/${b.id}|${b.code} ${b.name}>\n現在庫 7個（発注点 8個・変更前 8個）`,
+      ),
+    ]);
     expect(sent[0].body.blocks).toHaveLength(3);
     expect(await notifyFailures(SALES_ORDER_TARGET_TYPE, order.id)).toEqual([]);
   });
@@ -394,11 +403,13 @@ describe("棚卸調整", () => {
     const sent = sentMessages();
     expect(sent).toHaveLength(1);
     expect(sent[0].body.text).toBe(
-      [
-        "発注点を下回った商品が 1 件あります（棚卸調整）",
-        `・<${APP_URL}/stock/${product.id}|${product.code} ${product.name}>: 現在庫 2個（発注点 5個・変更前 10個）`,
-      ].join("\n"),
+      "発注点を下回った商品が 1 件あります（棚卸調整）",
     );
+    expect(sent[0].body.blocks.slice(1)).toEqual([
+      productBlock(
+        `<${APP_URL}/stock/${product.id}|${product.code} ${product.name}>\n現在庫 2個（発注点 5個・変更前 10個）`,
+      ),
+    ]);
   });
 
   it("跨がないとき（発注点以上のまま・発注点割れのまま・差分 0）は送らない", async () => {

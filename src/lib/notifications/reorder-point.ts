@@ -8,7 +8,8 @@
  * - 送信はトランザクション確定後。Server Action から notifyReorderPointAfterResponse で、応答を返した後（after()）に送る
  * - タイムアウト 3 秒、リダイレクトはたどらない。失敗しても業務処理は取り消さず、操作履歴（action = notify_failed）に
  *   原因の種類だけを記録する（Webhook URL・応答本文は記録しない）。成功は記録しない
- * - 送信関数は例外を投げない。fetch・環境変数は引数で差し替えられる（テストでは外部へ送らない）
+ * - 送信の失敗では例外を投げない（本文の組み立ての例外はプログラムの誤りとしてそのまま投げる。after() の中なので
+ *   業務処理には影響しない）。fetch・環境変数は引数で差し替えられる（テストでは外部へ送らない）
  */
 import { after } from "next/server";
 
@@ -58,13 +59,29 @@ export type ReorderNotificationOutcome =
   | { status: "sent" }
   | { status: "failed"; reason: NotifyFailureReason; httpStatus?: number };
 
+/**
+ * Slack の mrkdwn のテキスト。verbatim: true で Slack の自動解析（@here・@channel などのメンション化、
+ * URL・チャンネル名のリンク化）を止める（商品名・単位などの利用者の入力を含むため）。
+ * 明示的に組み立てた <URL|ラベル> のリンクは verbatim でも解釈される
+ */
+export interface SlackMrkdwn {
+  type: "mrkdwn";
+  text: string;
+  verbatim: true;
+}
+
 /** Slack Incoming Webhook の本文（使う項目だけ） */
 export interface SlackMessage {
+  /** 通知のプレビューに使われる（verbatim を指定できないので、利用者の入力を含めない） */
   text: string;
   blocks: (
-    | { type: "section"; text: { type: "mrkdwn"; text: string } }
-    | { type: "context"; elements: { type: "mrkdwn"; text: string }[] }
+    | { type: "section"; text: SlackMrkdwn }
+    | { type: "context"; elements: SlackMrkdwn[] }
   )[];
+}
+
+function mrkdwn(text: string): SlackMrkdwn {
+  return { type: "mrkdwn", text, verbatim: true };
 }
 
 export type WebhookUrlCheck =
@@ -119,7 +136,11 @@ export function triggerLabel(trigger: ReorderPointTrigger): string {
     : `受注 ${trigger.number} の出荷`;
 }
 
-/** 発注点割れの通知の本文（1 回の操作につき 1 通）。baseUrl が null なら在庫画面へのリンクを付けない */
+/**
+ * 発注点割れの通知の本文（1 回の操作につき 1 通）。baseUrl が null なら在庫画面へのリンクを付けない。
+ * 利用者の入力（商品コード・商品名・単位）は & < > をエスケープしたうえで、verbatim の blocks にだけ入れる。
+ * トップレベルの text は件数ときっかけだけ（自動解析を止められないため）。商品名は書式（*…* など）で囲まない
+ */
 export function buildReorderPointMessage(
   crossings: readonly ReorderPointCrossing[],
   trigger: ReorderPointTrigger,
@@ -143,27 +164,16 @@ export function buildReorderPointMessage(
       ? `ほか ${formatNumber(rest)} 件${baseUrl ? `（<${baseUrl}/stock?level=low|在庫一覧の発注点割れ>で確認してください）` : ""}`
       : null;
 
-  const text = [
-    title,
-    ...lines.map((l) => `・${l.link}: ${l.detail}`),
-    ...(restText ? [restText] : []),
-  ].join("\n");
-
   return {
-    text,
+    text: title,
     blocks: [
-      { type: "section", text: { type: "mrkdwn", text: `*${title}*` } },
+      { type: "section", text: mrkdwn(`*${title}*`) },
       ...lines.map((l) => ({
         type: "section" as const,
-        text: { type: "mrkdwn" as const, text: `*${l.link}*\n${l.detail}` },
+        text: mrkdwn(`${l.link}\n${l.detail}`),
       })),
       ...(restText
-        ? [
-            {
-              type: "context" as const,
-              elements: [{ type: "mrkdwn" as const, text: restText }],
-            },
-          ]
+        ? [{ type: "context" as const, elements: [mrkdwn(restText)] }]
         : []),
     ],
   };
@@ -241,7 +251,7 @@ async function recordFailure(
 }
 
 /**
- * 発注点割れの通知を送る。トランザクション確定後に呼ぶこと。例外は投げない。
+ * 発注点割れの通知を送る。トランザクション確定後に呼ぶこと。送信の失敗では例外を投げない（組み立ての例外は投げる）。
  * 失敗したら操作履歴（notify_failed）に記録して { status: "failed" } を返す（業務処理には影響させない）
  */
 export async function sendReorderPointNotification(
@@ -269,12 +279,13 @@ export async function sendReorderPointNotification(
   }
 
   const fetchFn = options.fetch ?? fetch;
+  // 組み立ての例外を通信エラーとして記録しないよう、送信の try の外で組み立てる
+  const message = buildReorderPointMessage(
+    notification.crossings,
+    notification.trigger,
+    appBaseUrl(env.BETTER_AUTH_URL),
+  );
   try {
-    const message = buildReorderPointMessage(
-      notification.crossings,
-      notification.trigger,
-      appBaseUrl(env.BETTER_AUTH_URL),
-    );
     const response = await fetchFn(webhook.url, {
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8" },

@@ -111,18 +111,14 @@ describe("appBaseUrl", () => {
 });
 
 describe("buildReorderPointMessage", () => {
-  it("きっかけ・商品コード・名前・現在庫・発注点・在庫画面へのリンクを 1 通にまとめる", () => {
+  it("きっかけ・商品コード・名前・現在庫・発注点・在庫画面へのリンクを 1 通にまとめる。text は件数ときっかけだけ", () => {
     const message = buildReorderPointMessage(
       SHIPPED.crossings,
       SHIPPED.trigger,
       "https://stockflow.example.test",
     );
     expect(message.text).toBe(
-      [
-        "発注点を下回った商品が 2 件あります（受注 SO-20261013-001 の出荷）",
-        "・<https://stockflow.example.test/stock/1|P-0001 商品 1>: 現在庫 3個（発注点 10個・変更前 12個）",
-        "・<https://stockflow.example.test/stock/2|P-0002 商品 2>: 現在庫 0箱（発注点 10箱・変更前 12箱）",
-      ].join("\n"),
+      "発注点を下回った商品が 2 件あります（受注 SO-20261013-001 の出荷）",
     );
     expect(message.blocks).toEqual([
       {
@@ -130,20 +126,23 @@ describe("buildReorderPointMessage", () => {
         text: {
           type: "mrkdwn",
           text: "*発注点を下回った商品が 2 件あります（受注 SO-20261013-001 の出荷）*",
+          verbatim: true,
         },
       },
       {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: "*<https://stockflow.example.test/stock/1|P-0001 商品 1>*\n現在庫 3個（発注点 10個・変更前 12個）",
+          text: "<https://stockflow.example.test/stock/1|P-0001 商品 1>\n現在庫 3個（発注点 10個・変更前 12個）",
+          verbatim: true,
         },
       },
       {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: "*<https://stockflow.example.test/stock/2|P-0002 商品 2>*\n現在庫 0箱（発注点 10箱・変更前 12箱）",
+          text: "<https://stockflow.example.test/stock/2|P-0002 商品 2>\n現在庫 0箱（発注点 10箱・変更前 12箱）",
+          verbatim: true,
         },
       },
     ]);
@@ -156,21 +155,63 @@ describe("buildReorderPointMessage", () => {
       null,
     );
     expect(message.text).toBe(
-      "発注点を下回った商品が 1 件あります（棚卸調整）\n・P-0003 商品 3: 現在庫 900個（発注点 1,000個・変更前 12,000個）",
+      "発注点を下回った商品が 1 件あります（棚卸調整）",
     );
-    expect(message.text).not.toContain("<");
+    expect(message.blocks[1]).toEqual({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "P-0003 商品 3\n現在庫 900個（発注点 1,000個・変更前 12,000個）",
+        verbatim: true,
+      },
+    });
+    expect(JSON.stringify(message)).not.toContain("<");
   });
 
-  it("商品名の &・<・> はエスケープする（リンクや宛先の書式として解釈させない）", () => {
-    const message = buildReorderPointMessage(
-      [crossing(4, { name: "<!channel> A&B >" })],
-      { kind: "stock_adjust", productId: 4 },
-      "https://stockflow.example.test",
-    );
-    expect(message.text).toContain(
-      "<https://stockflow.example.test/stock/4|P-0004 &lt;!channel&gt; A&amp;B &gt;>",
-    );
-    expect(message.text).not.toContain("<!channel>");
+  describe("利用者の入力（商品名・単位）を宛先指定・リンクとして解釈させない", () => {
+    const HOSTILE =
+      "@here @channel <!here> <!channel> <@U123> <https://example.test|text> &lt;";
+    const ESCAPED =
+      "@here @channel &lt;!here&gt; &lt;!channel&gt; &lt;@U123&gt; &lt;https://example.test|text&gt; &amp;lt;";
+    const hostile = crossing(4, { name: HOSTILE, unit: HOSTILE });
+
+    for (const baseUrl of ["https://stockflow.example.test", null]) {
+      it(`リンク${baseUrl ? "あり" : "なし"}: & < > をエスケープし、すべての mrkdwn に verbatim: true を付ける。text には入れない`, () => {
+        const message = buildReorderPointMessage(
+          [hostile],
+          { kind: "stock_adjust", productId: 4 },
+          baseUrl,
+        );
+        // トップレベルの text（プレビュー）は自動解析を止められないので、利用者の入力を含めない
+        expect(message.text).toBe(
+          "発注点を下回った商品が 1 件あります（棚卸調整）",
+        );
+        const label = `P-0004 ${ESCAPED}`;
+        expect(message.blocks[1]).toEqual({
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `${baseUrl ? `<${baseUrl}/stock/4|${label}>` : label}\n現在庫 3${ESCAPED}（発注点 10${ESCAPED}・変更前 12${ESCAPED}）`,
+            verbatim: true,
+          },
+        });
+        const texts = message.blocks.flatMap((b) =>
+          b.type === "section" ? [b.text] : b.elements,
+        );
+        expect(texts.every((t) => t.verbatim === true)).toBe(true);
+        // 生の宛先指定・リンクの書式が残っていない（組み立てた在庫リンクだけが < で始まる）
+        const body = JSON.stringify(message.blocks);
+        for (const raw of [
+          "<!here>",
+          "<!channel>",
+          "<@U123>",
+          "<https://example.test",
+        ]) {
+          expect(body).not.toContain(raw);
+        }
+        expect(body.match(/</g) ?? []).toHaveLength(baseUrl ? 1 : 0);
+      });
+    }
   });
 
   it(`${MAX_LISTED_PRODUCTS} 件を超えた分は「ほか N 件」にまとめる`, () => {
@@ -190,11 +231,13 @@ describe("buildReorderPointMessage", () => {
         {
           type: "mrkdwn",
           text: "ほか 3 件（<https://stockflow.example.test/stock?level=low|在庫一覧の発注点割れ>で確認してください）",
+          verbatim: true,
         },
       ],
     });
-    expect(message.text.split("\n")).toHaveLength(MAX_LISTED_PRODUCTS + 2);
-    expect(message.text).toContain("発注点を下回った商品が 23 件あります");
+    expect(message.text).toBe(
+      "発注点を下回った商品が 23 件あります（受注 SO-1 の出荷）",
+    );
   });
 });
 
@@ -394,6 +437,21 @@ describe("sendReorderPointNotification", () => {
     const logged = JSON.stringify(vi.mocked(console.warn).mock.calls);
     expect(logged).toContain("ECONNREFUSED");
     expect(logged).not.toContain("secret-token");
+  });
+
+  it("本文の組み立ての例外は通信エラーとして記録せず、送らずにそのまま投げる", async () => {
+    const { db, create } = fakeDb();
+    const fetchMock = vi.fn();
+    const broken = crossing(1, { name: undefined as unknown as string });
+    await expect(
+      sendReorderPointNotification(
+        db,
+        { ...SHIPPED, crossings: [broken] },
+        { fetch: fetchMock, env: ENV },
+      ),
+    ).rejects.toThrow(TypeError);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("操作履歴の書き込みに失敗しても例外を投げない", async () => {
