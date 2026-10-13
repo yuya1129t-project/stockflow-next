@@ -6,6 +6,9 @@ import { expect, test } from "@playwright/test";
 
 import { demoAccount, submitLogin } from "./helpers";
 
+// ログインを試すテストは再試行しない（試行回数制限の 60 秒に 5 回を、再試行で使い切らないため）
+test.describe.configure({ retries: 0 });
+
 test("間違ったパスワードではログインできず、エラーを表示する", async ({
   page,
 }) => {

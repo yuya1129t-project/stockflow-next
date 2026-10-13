@@ -27,7 +27,7 @@ export default defineConfig({
   globalSetup: "./e2e/global-setup.ts",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  // ログインの試行回数制限があるので、ログインを含むテストを何度も再実行しないよう CI でも 1 回まで
+  // ログインを試すテスト（setup・auth.spec・logout）は再試行しない（各プロジェクト・ファイルで 0 にしている）
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CI ? 2 : undefined,
   timeout: 30_000,
@@ -42,7 +42,8 @@ export default defineConfig({
   },
   projects: [
     // ロールごとに 1 回ログインして storageState を保存する
-    { name: "setup", testMatch: /auth\.setup\.ts$/ },
+    // 再試行するとログインの試行回数制限（60 秒に 5 回）を使い切るので再試行しない
+    { name: "setup", testMatch: /auth\.setup\.ts$/, retries: 0 },
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
@@ -55,13 +56,17 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
       testMatch: /logout\.spec\.ts$/,
       dependencies: ["chromium"],
+      // 1 回目でセッションが消えるので、再試行しても同じ storageState では通らない
+      retries: 0,
     },
   ],
   webServer: {
     command: `pnpm build && pnpm start --hostname 127.0.0.1 --port ${PORT}`,
     url: `${BASE_URL}/login`,
     timeout: 300_000,
-    reuseExistingServer: !process.env.CI,
+    // 既存のサーバーは使わない（webServer.env の DATABASE_URL が効かず、開発用 DB を向いたサーバーで
+    // テストが走るのを防ぐ）。3113 番が使用中なら起動に失敗して止まる
+    reuseExistingServer: false,
     stdout: "ignore",
     stderr: "pipe",
     env: {

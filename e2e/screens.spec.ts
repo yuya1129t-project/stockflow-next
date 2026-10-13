@@ -5,12 +5,18 @@ import { readFile } from "node:fs/promises";
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { STORAGE_STATE } from "./helpers";
+import { adjustStock, createProduct, parseCsv, STORAGE_STATE } from "./helpers";
 
 test.describe("staff", () => {
   test.use({ storageState: STORAGE_STATE.staff });
 
-  test("ダッシュボードが表示される", async ({ page }) => {
+  test("ダッシュボードの発注点割れの一覧に、作った商品がコード・在庫・発注点とともに出る", async ({
+    page,
+  }) => {
+    // 一覧は不足の大きい順に 5 件までなので、どのシードの商品よりも不足が大きくなる発注点にする
+    const product = await createProduct(page, { reorderPoint: 1_000_000 });
+    await adjustStock(page, product.id, 3);
+
     await page.goto("/");
     await expect(
       page.getByRole("heading", { level: 1, name: "ダッシュボード" }),
@@ -24,15 +30,26 @@ test.describe("staff", () => {
     ]) {
       await expect(main.getByText(title).first()).toBeVisible();
     }
-    // シードには発注点を下回る商品があるので、在庫画面へのリンクが出る
+    // 今月の受注額・未出荷・発注点割れの件数などの集計値は、並列に動くほかのテスト（受注・発注・
+    // 商品の作成）で変わるので固定値では比べない。テスト自身が作った商品の行だけを値まで確かめる
+    const item = main
+      .getByRole("listitem")
+      .filter({ has: page.getByRole("link", { name: product.code }) });
+    await expect(item).toHaveCount(1);
+    await expect(item).toContainText(product.name);
+    await expect(item).toContainText("在庫 3 / 発注点 1,000,000");
+    await expect(item).toContainText("不足 999,997個");
     await expect(
-      main.getByRole("link", { name: "在庫を見る" }).first(),
-    ).toBeVisible();
+      item.getByRole("link", { name: product.code }),
+    ).toHaveAttribute("href", `/stock/${product.id}`);
   });
 
-  test("商品の CSV を出力できる（UTF-8 の BOM 付き・見出し行あり）", async ({
+  test("商品の CSV を出力できる（UTF-8 の BOM 付き・見出し行あり・作った商品の行）", async ({
     page,
   }) => {
+    const product = await createProduct(page, { reorderPoint: 7 });
+    await adjustStock(page, product.id, 4);
+
     await page.goto("/products");
     const [download] = await Promise.all([
       page.waitForEvent("download"),
@@ -42,13 +59,37 @@ test.describe("staff", () => {
 
     const bytes = await readFile(await download.path());
     expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
-    const lines = bytes.subarray(3).toString("utf8").split("\r\n");
-    expect(lines[0]).toBe(
-      "商品コード,商品名,カテゴリ,単位,売価,仕入単価,発注点,現在庫,状態",
-    );
-    // シードの商品が 1 行以上ある（最後は改行で終わる）
-    expect(lines.length).toBeGreaterThan(2);
-    expect(lines.at(-1)).toBe("");
+    const text = bytes.subarray(3).toString("utf8");
+    expect(text.endsWith("\r\n")).toBe(true);
+    const [header, ...rows] = parseCsv(text);
+    expect(header).toEqual([
+      "商品コード",
+      "商品名",
+      "カテゴリ",
+      "単位",
+      "売価",
+      "仕入単価",
+      "発注点",
+      "現在庫",
+      "状態",
+    ]);
+    // テストが作った商品の行をコードで特定して、各列を比べる
+    const matched = rows.filter((row) => row[0] === product.code);
+    expect(matched).toEqual([
+      [
+        product.code,
+        product.name,
+        "E2E",
+        "個",
+        "1200",
+        "800",
+        "7",
+        "4",
+        "有効",
+      ],
+    ]);
+    // ほかの行も列数がそろっている
+    for (const row of rows) expect(row).toHaveLength(header.length);
   });
 
   test("取引先の郵便番号から住所を入力できる（API はモック）", async ({

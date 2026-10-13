@@ -1,9 +1,16 @@
 /**
  * ロールごとの権限（画面の出し分けと、直接 URL で開いたときの 403）。読み取りだけのテスト
  */
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { STORAGE_STATE } from "./helpers";
+import {
+  createPurchaseOrder,
+  createSalesOrder,
+  STORAGE_STATE,
+} from "./helpers";
+
+/** シードの商品（下書きの明細に使うだけで、在庫は変えない） */
+const SEED_PRODUCT_ID = 1;
 
 /** 画面を開いて 403（権限なし）になることを確かめる */
 async function expectForbidden(page: Page, path: string) {
@@ -14,45 +21,148 @@ async function expectForbidden(page: Page, path: string) {
   ).toBeVisible();
 }
 
+/** 画面と、その画面での登録・編集・ステータス変更などの操作（staff にはあり、viewer にはない） */
+interface ControlCheck {
+  /** 開く画面。伝票は staff のページで選ぶか作る（そのときは name でテスト名を付ける） */
+  path: string | ((page: Page) => Promise<string>);
+  name?: string;
+  controls: (page: Page) => Locator[];
+}
+
+/**
+ * 一覧を絞り込んで、最初の伝票の詳細画面のパスを返す。受注日の古い順にして、ほかのテストが作って
+ * ステータスを進めている伝票（今日の日付）ではなく、シードの伝票（確定・発注済は過去の日付にもある）を選ぶ
+ */
+function firstOrderPath(
+  list: string,
+  base: "sales-orders" | "purchase-orders",
+) {
+  return async (page: Page) => {
+    await page.goto(list);
+    const href = await page
+      .locator(`table a[href^="/${base}/"]`)
+      .first()
+      .getAttribute("href", { timeout: 10_000 });
+    expect(href).toMatch(new RegExp(`^/${base}/\\d+$`));
+    return href!;
+  };
+}
+
+const CONTROL_CHECKS: ControlCheck[] = [
+  {
+    path: "/products",
+    controls: (page) => [
+      page.getByRole("link", { name: "新規登録" }),
+      page.getByRole("link", { name: "CSV 取込" }),
+    ],
+  },
+  {
+    // 無効化は admin のみ（staff にもない）ので、編集だけを比べる
+    path: "/products/1",
+    controls: (page) => [page.getByRole("link", { name: "編集する" })],
+  },
+  {
+    path: "/partners",
+    controls: (page) => [page.getByRole("link", { name: "新規登録" })],
+  },
+  {
+    path: "/partners/1",
+    controls: (page) => [page.getByRole("link", { name: "編集する" })],
+  },
+  {
+    path: "/sales-orders",
+    controls: (page) => [page.getByRole("link", { name: "新規作成" })],
+  },
+  {
+    name: "受注の詳細（下書き）",
+    // 下書きはシードに安定したものがない（受注は今日の 1 件だけ、発注はない）ので、ここで作る
+    path: async (staff) =>
+      `/sales-orders/${await createSalesOrder(staff, SEED_PRODUCT_ID, 1)}`,
+    controls: (page) => [
+      page.getByRole("link", { name: "編集する" }),
+      page.getByRole("button", { name: "確定する" }),
+      page.getByRole("button", { name: "取り消す" }),
+    ],
+  },
+  {
+    name: "受注の詳細（確定）",
+    path: firstOrderPath(
+      "/sales-orders?status=confirmed&sort=orderDate&order=asc",
+      "sales-orders",
+    ),
+    controls: (page) => [page.getByRole("button", { name: "出荷済にする" })],
+  },
+  {
+    path: "/purchase-orders",
+    controls: (page) => [page.getByRole("link", { name: "新規作成" })],
+  },
+  {
+    name: "発注の詳細（下書き）",
+    path: async (staff) =>
+      `/purchase-orders/${await createPurchaseOrder(staff, SEED_PRODUCT_ID, 1)}`,
+    controls: (page) => [
+      page.getByRole("link", { name: "編集する" }),
+      page.getByRole("button", { name: "発注済にする" }),
+    ],
+  },
+  {
+    name: "発注の詳細（発注済）",
+    path: firstOrderPath(
+      "/purchase-orders?status=ordered&sort=orderDate&order=asc",
+      "purchase-orders",
+    ),
+    controls: (page) => [page.getByRole("button", { name: "入荷済にする" })],
+  },
+  {
+    path: "/stock/1",
+    controls: (page) => [
+      page.getByRole("heading", { name: "棚卸調整" }),
+      page.getByRole("button", { name: "調整を記録する" }),
+    ],
+  },
+];
+
 test.describe("viewer", () => {
   test.use({ storageState: STORAGE_STATE.viewer });
 
-  test("一覧・詳細は見られるが、登録・編集のボタンがない", async ({ page }) => {
+  for (const check of CONTROL_CHECKS) {
+    const name = check.name ?? check.path;
+    test(`${name}: 見られるが、登録・編集・ステータス変更の操作がない（staff と比べる）`, async ({
+      page,
+      browser,
+    }) => {
+      // 対照: 同じ画面を staff で開くと操作がある（ラベルが変わってテストが空振りしていないこと）
+      const staffContext = await browser.newContext({
+        storageState: STORAGE_STATE.staff,
+      });
+      let path: string;
+      try {
+        const staff = await staffContext.newPage();
+        path =
+          typeof check.path === "string" ? check.path : await check.path(staff);
+        await staff.goto(path);
+        for (const control of check.controls(staff)) {
+          await expect(control.first()).toBeVisible();
+        }
+      } finally {
+        await staffContext.close();
+      }
+
+      const response = await page.goto(path);
+      expect(response?.status()).toBe(200);
+      await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+      for (const control of check.controls(page)) {
+        await expect(control).toHaveCount(0);
+      }
+    });
+  }
+
+  test("CSV 出力はでき、ユーザー管理・操作履歴はメニューに出ない", async ({
+    page,
+  }) => {
     await page.goto("/products");
-    await expect(
-      page.getByRole("heading", { level: 1, name: "商品" }),
-    ).toBeVisible();
-    await expect(page.getByRole("table")).toBeVisible();
     await expect(page.getByRole("link", { name: "CSV 出力" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "新規登録" })).toHaveCount(0);
-    await expect(page.getByRole("link", { name: "CSV 取込" })).toHaveCount(0);
 
-    // 商品の詳細（シードの 1 件目）にも編集・無効化の操作がない
-    await page.goto("/products/1");
-    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-    await expect(page.getByRole("link", { name: "編集する" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "無効にする" })).toHaveCount(
-      0,
-    );
-
-    for (const path of ["/partners", "/sales-orders", "/purchase-orders"]) {
-      await page.goto(path);
-      await expect(page.getByRole("table")).toBeVisible();
-      await expect(page.getByRole("link", { name: /新規|作成/ })).toHaveCount(
-        0,
-      );
-    }
-
-    // 在庫の詳細に棚卸調整のフォームがない
-    await page.goto("/stock/1");
-    await expect(
-      page.getByRole("heading", { name: "入出庫履歴" }),
-    ).toBeVisible();
-    await expect(page.getByRole("heading", { name: "棚卸調整" })).toHaveCount(
-      0,
-    );
-
-    // ユーザー管理・操作履歴はメニューに出ない
     const nav = page.getByRole("navigation").first();
     await expect(nav.getByRole("link", { name: "商品" })).toBeVisible();
     await expect(nav.getByRole("link", { name: "ユーザー管理" })).toHaveCount(
@@ -107,7 +217,14 @@ test.describe("admin", () => {
     await expect(
       page.getByRole("heading", { level: 1, name: "操作履歴" }),
     ).toBeVisible();
-    // ログインは操作履歴に記録されている（e2e/auth.setup.ts のログイン）
-    await expect(page.getByRole("table")).toContainText("ログインしました");
+    // ログインは操作履歴に記録されている（e2e/auth.setup.ts のログイン）。ほかのテストの操作で
+    // 1 ページ目から押し出されないよう、操作＝ログインで絞り込む
+    await page.goto("/audit-logs?action=login");
+    const rows = page.getByRole("table").getByRole("row");
+    for (const name of ["デモ管理者", "デモ担当者", "デモ閲覧者"]) {
+      await expect(
+        rows.filter({ hasText: name }).filter({ hasText: "ログインしました" }),
+      ).not.toHaveCount(0);
+    }
   });
 });

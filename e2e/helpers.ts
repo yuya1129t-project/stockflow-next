@@ -128,6 +128,24 @@ export async function createSalesOrder(
   return Number(new URL(page.url()).pathname.split("/")[2]);
 }
 
+/** 発注を 1 明細で作成する（下書き）。作成後の詳細画面の URL から ID を返す */
+export async function createPurchaseOrder(
+  page: Page,
+  productId: number,
+  quantity: number,
+): Promise<number> {
+  await page.goto("/purchase-orders/new");
+  await page.locator("#purchase-order-supplierId").selectOption({ index: 1 });
+  // 作成画面は空の明細が 1 行ある状態で始まる
+  await page
+    .locator("#purchase-order-line-0-product")
+    .selectOption(String(productId));
+  await page.locator("#purchase-order-line-0-quantity").fill(String(quantity));
+  await page.getByRole("button", { name: "下書きを保存する" }).click();
+  await page.waitForURL(/\/purchase-orders\/\d+\?saved=created$/);
+  return Number(new URL(page.url()).pathname.split("/")[2]);
+}
+
 /** 詳細画面のステータス変更ボタンを押し、確認ダイアログで実行する */
 export async function changeStatus(page: Page, action: string) {
   await page.getByRole("button", { name: action }).click();
@@ -141,4 +159,43 @@ export function statusText(page: Page) {
   return page
     .locator("dt", { hasText: /^ステータス$/ })
     .locator("xpath=following-sibling::dd[1]");
+}
+
+/** CSV（RFC 4180。引用符・引用の中のカンマと改行に対応）を行と列に分ける。最後の改行のあとの空行は含めない */
+export function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (c === '"') {
+        quoted = false;
+      } else {
+        cell += c;
+      }
+    } else if (c === '"') {
+      quoted = true;
+    } else if (c === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (c === "\r" && text[i + 1] === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+      i++;
+    } else {
+      cell += c;
+    }
+  }
+  if (cell !== "" || row.length > 0) {
+    row.push(cell);
+    rows.push(row);
+  }
+  return rows;
 }
