@@ -95,16 +95,23 @@ function orderBy(
   }
 }
 
-/** 一覧（絞り込み・並べ替え・ページ送り） */
+/**
+ * 一覧（絞り込み・並べ替え・ページ送り）。
+ * options は REST API（#11）用: perPage（既定は画面の件数）、clampPage = false なら範囲外のページを丸めず空で返す
+ */
 export async function listSalesOrders(
   db: PrismaClient,
   params: SalesOrderListParams,
+  options: { perPage?: number; clampPage?: boolean } = {},
 ): Promise<SalesOrderListResult> {
   const filter = where(params);
   const total = await db.salesOrder.count({ where: filter });
-  const perPage = SALES_ORDERS_PER_PAGE;
+  const perPage = options.perPage ?? SALES_ORDERS_PER_PAGE;
   const totalPages = Math.max(1, Math.ceil(total / perPage));
-  const page = Math.min(params.page, totalPages);
+  const page =
+    options.clampPage === false
+      ? params.page
+      : Math.min(params.page, totalPages);
   const rows = await db.salesOrder.findMany({
     where: filter,
     select: LIST_SELECT,

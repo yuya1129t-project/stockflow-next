@@ -12,7 +12,7 @@
 
 ## 主な機能
 
-現時点では初期構築（土台）、DB スキーマ・シードデータ、認証とロール権限、商品マスタ、取引先マスタ、在庫、ダッシュボード、発注、受注、発注点割れの通知、ユーザー管理・操作履歴・API トークンまでです。「予定」の機能は今後の Issue で実装します
+現時点では初期構築（土台）、DB スキーマ・シードデータ、認証とロール権限、商品マスタ、取引先マスタ、在庫、ダッシュボード、発注、受注、発注点割れの通知、ユーザー管理・操作履歴・API トークン、外部向け REST API までです。「予定」の機能は今後の Issue で実装します
 
 | 機能                   | 内容                                                                   | 状態   |
 | ---------------------- | ---------------------------------------------------------------------- | ------ |
@@ -24,7 +24,7 @@
 | 在庫                   | 現在庫一覧（発注点割れの強調）、入出庫履歴、棚卸調整                   | 実装済 |
 | ダッシュボード         | 今月の受注額・未出荷数・発注点割れ・入荷待ち                           | 実装済 |
 | ユーザー管理・操作履歴 | ユーザー・ロール管理、API トークン、操作履歴の閲覧                     | 実装済 |
-| 外部向け REST API      | `/api/v1`（Bearer 認証）、OpenAPI 3.1                                  | 予定   |
+| 外部向け REST API      | `/api/v1`（Bearer 認証）、OpenAPI 3.1                                  | 実装済 |
 | 通知                   | 発注点割れを Webhook で通知                                            | 実装済 |
 
 ## 技術スタック
@@ -258,7 +258,8 @@ erDiagram
     - `forbidden()` を使うため、`next.config.ts` で実験的な設定 `experimental.authInterrupts` を有効にしています（Next.js 16 で画面から HTTP 403 を返す手段がこれしかないため）
   - Server Action: `checkActionPermission(action)`。画面遷移はせず `{ ok: false, error }` を返すので、フォームの入力内容を消さずにエラーを表示できます
   - Route Handler: `requireApiPermission(request, action)`。未ログインは 401、権限外は 403 を JSON で返します
-  - `src/proxy.ts`（Next.js 16 で Middleware から改名された Proxy）は、セッション Cookie が無いときにログイン画面へ送る楽観的なチェックだけを行います
+  - REST API（`/api/v1`）: Bearer トークンだけで認証します（Cookie のセッションは使いません。下の「REST API」）
+  - `src/proxy.ts`（Next.js 16 で Middleware から改名された Proxy）は、セッション Cookie が無いときにログイン画面へ送る楽観的なチェックだけを行います（ログイン画面と `/api-docs` は対象外）
 
 ## 商品マスタ
 
@@ -463,7 +464,58 @@ pnpm format            # Prettier で整形
 
 ## REST API
 
-（#11 で追加予定）
+外部のシステムから商品・在庫・受注を参照し、受注を登録するための API です（docs/spec.md §6-2。② Laravel・③ FastAPI 版と同じ仕様）。
+
+| メソッド | パス                                                    | 内容                     | 権限                 |
+| -------- | ------------------------------------------------------- | ------------------------ | -------------------- |
+| GET      | `/api/v1/products?q=&page=&perPage=`                    | 商品一覧（現在庫を含む） | admin／staff／viewer |
+| GET      | `/api/v1/products/{code}/stock`                         | 商品の現在庫と発注点     | admin／staff／viewer |
+| GET      | `/api/v1/sales-orders?status=&from=&to=&page=&perPage=` | 受注一覧                 | admin／staff／viewer |
+| GET      | `/api/v1/sales-orders/{number}`                         | 受注詳細（明細を含む）   | admin／staff／viewer |
+| POST     | `/api/v1/sales-orders`                                  | 受注の登録（下書き）     | admin／staff         |
+| GET      | `/api/v1/openapi.json`                                  | OpenAPI 3.1 の定義       | 認証不要             |
+
+- **ドキュメント:** http://localhost:3000/api-docs （Swagger UI。ログインなしで閲覧できます）。定義のスナップショットは [docs/openapi.json](docs/openapi.json)
+- **認証:** `Authorization: Bearer <token>` だけです。画面のログイン（Cookie）では使えません（ブラウザが自動で送る Cookie で API を動かせないようにして、CSRF の余地をなくすため）。失敗は理由（ヘッダーなし・形式違い・失効・ユーザー無効など）を区別せず、同じ 401（`WWW-Authenticate: Bearer realm="StockFlow API"`）を返します
+- **権限:** トークンの持ち主の**現在の**ロールに従います（ロール変更・無効化は次のリクエストから効く）。viewer は参照のみ、受注の登録は admin／staff
+- **形式:** 一覧は `{ data, meta: { page, perPage, total } }`（perPage は既定 20・上限 100。全件数を超えるページは空の data）。金額・数量は整数、日付は `YYYY-MM-DD`、日時は ISO 8601（UTC）。商品・取引先・受注はコード・番号で表し、内部の ID は出しません。コード・番号の大文字・小文字は区別しません
+- **エラー:** RFC 9457（`application/problem+json`。`type` は `about:blank`、`title` は HTTP のステータスの説明、`detail` は日本語）。400（検証エラーは `errors` に項目ごとの内容。本文の項目は JSON Pointer の `pointer`、クエリは `parameter`）／401／403／404／413（本文が 64KB を超える）／415（JSON 以外）。画面の一覧と違い、不正なクエリ（`perPage=101` など）は既定値に置き換えずに 400 にします
+- **受注の登録:** 顧客コード・商品コード・数量（・納期・備考）を送ると、draft で作成します。単価は商品マスタの売価です。画面と同じ受注の service（`src/lib/sales-orders/service.ts`）を通すので、検証（顧客の種別・有効、商品の有効・重複、納期、合計の上限）・ロック・採番・金額の計算・操作履歴は画面と同じです。操作履歴の内容に「REST API（トークン #ID）から作成」と残ります。余分な項目・型違い（数量を文字列で送るなど）は 400 です
+
+### トークンの発行
+
+1. admin でログインし、「ユーザー管理」→ 使うユーザー（API の権限はこのユーザーのロール）の詳細を開く
+2. 「API トークン」に名前を入れて発行する。表示されたトークン（`sf_` で始まる）は**この 1 回しか表示されない**ので控える（DB にはハッシュだけを保存します）
+3. 不要になったら同じ画面で失効させる
+
+### 例（curl）
+
+```bash
+TOKEN=sf_...   # 発行したトークン
+
+# 商品一覧（検索・ページ送り）
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3000/api/v1/products?q=P-00&perPage=5"
+
+# 商品の現在庫と発注点
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3000/api/v1/products/P-0001/stock
+
+# 受注一覧（下書き・期間で絞り込み）と詳細
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3000/api/v1/sales-orders?status=draft&from=2026-10-01&to=2026-10-31"
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3000/api/v1/sales-orders/SO-20261013-001
+
+# 受注の登録（staff／admin のトークン）
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"customerCode":"C-0001","dueDate":"2026-10-31","note":"API から登録","lines":[{"productCode":"P-0001","quantity":3}]}' \
+  http://localhost:3000/api/v1/sales-orders
+```
+
+### 実装と OpenAPI の定義
+
+- 入出力のスキーマは Zod で 1 か所（`src/lib/api/v1/schemas.ts`）に定義し、OpenAPI 3.1 の定義（`src/lib/api/v1/openapi.ts`）は `z.toJSONSchema` で組み立てます（手書きの JSON Schema と食い違わないように）
+- `docs/openapi.json` はそのスナップショットです。API を変えたら `pnpm openapi:generate` で書き出してコミットします（一致しないと単体テストが落ちます）
+- 食い違いの検出: 結合テスト（`tests/integration/rest-api.test.ts`）で、各エンドポイントの実際の応答（成功・エラーとも）を `docs/openapi.json` のスキーマで検証します（Zod とは別の実装の [ajv](https://ajv.js.org/)（JSON Schema 2020-12）で、公開する JSON そのものを確かめます。開発時の依存のみ）。定義にないステータス・Content-Type・項目の過不足・型違いはテストが落ち、定義した応答をすべてテストで返したことも確認します。Route Handler のパス・メソッドと定義の一致は単体テストで確かめます
+- `/api-docs` の Swagger UI は依存に入れず、jsDelivr から版を固定し SRI（`integrity`）付きで読み込みます。この画面の応答にだけ CSP（スクリプトはその版の CDN と初期化スクリプトのハッシュだけ、通信は同じオリジンだけ）を付けています
+- 残る制限: API 独自の回数制限はありません（トークンは admin が発行したものだけ）。CORS は許可していないので、ほかのオリジンのブラウザからは呼べません（サーバー間の利用を想定）
 
 ## 開発の進め方
 

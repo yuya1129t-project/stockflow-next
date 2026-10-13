@@ -110,19 +110,26 @@ const SELECT_WITH_STOCK = Prisma.sql`
   FROM "product" p
   ${JOIN_STOCK}`;
 
-/** 一覧（検索・並べ替え・ページ送り）。在庫一覧（/stock）も lowStock を付けてこれを使う */
+/**
+ * 一覧（検索・並べ替え・ページ送り）。在庫一覧（/stock）も lowStock を付けてこれを使う。
+ * options は REST API（#11）用: perPage（既定は画面の件数）、clampPage = false なら範囲外のページを丸めず空で返す
+ */
 export async function listProducts(
   db: PrismaClient,
   params: ProductListParams & { lowStock?: boolean },
+  options: { perPage?: number; clampPage?: boolean } = {},
 ): Promise<ProductListResult> {
   const where = whereClause(params);
   // 件数は、発注点割れで絞り込むときだけ現在庫の集計を結合する
   const [{ count }] = await db.$queryRaw<{ count: number }[]>`
     SELECT COUNT(*)::int AS "count" FROM "product" p
     ${params.lowStock ? JOIN_STOCK : Prisma.empty} ${where}`;
-  const perPage = PRODUCTS_PER_PAGE;
+  const perPage = options.perPage ?? PRODUCTS_PER_PAGE;
   const totalPages = Math.max(1, Math.ceil(count / perPage));
-  const page = Math.min(params.page, totalPages);
+  const page =
+    options.clampPage === false
+      ? params.page
+      : Math.min(params.page, totalPages);
 
   const items = await db.$queryRaw<ProductListItem[]>`
     ${SELECT_WITH_STOCK}
