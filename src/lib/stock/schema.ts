@@ -7,6 +7,7 @@
 import { z } from "zod";
 
 import { normalizeDigits } from "@/lib/products/schema";
+import { SINGLE_LINE, singleLineMessage } from "@/lib/validation/text";
 
 export const STOCK_ADJUST_FIELD_LABELS = {
   actualQuantity: "実数",
@@ -55,10 +56,7 @@ export const stockAdjustSchema = z.object({
       STOCK_ADJUST_LIMITS.reason,
       `理由は${STOCK_ADJUST_LIMITS.reason}文字以内で入力してください`,
     )
-    .regex(
-      /^[^\u0000-\u001f\u007f]*$/,
-      "理由に改行・タブなどの制御文字は使えません",
-    ),
+    .regex(SINGLE_LINE, singleLineMessage("理由")),
 });
 
 /** フォームから受け取る値（すべて文字列） */

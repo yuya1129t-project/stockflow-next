@@ -174,6 +174,18 @@ describe("orderNoteSchema（備考）", () => {
     expect(errorsOf(orderNoteSchema, "a\tb")).toEqual({
       _form: ["備考にタブなどの制御文字は使えません"],
     });
+    for (const char of [
+      "\u2028",
+      "\u2029",
+      "\u202e",
+      "\u2066",
+      "\ufeff",
+      "\u0085",
+    ]) {
+      expect(errorsOf(orderNoteSchema, `a${char}b`)).toEqual({
+        _form: ["備考にタブなどの制御文字は使えません"],
+      });
+    }
     expect(errorsOf(orderNoteSchema, "あ".repeat(501))).toEqual({
       _form: ["備考は500文字以内で入力してください"],
     });

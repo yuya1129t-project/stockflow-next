@@ -6,6 +6,7 @@
  * DB やフレームワークに依存しない純粋なモジュール（クライアントからも import できる）
  */
 import { z } from "zod";
+import { SINGLE_LINE, singleLineMessage } from "@/lib/validation/text";
 
 /** 項目名（画面のラベル・エラー文・操作履歴で共通） */
 export const PARTNER_FIELD_LABELS = {
@@ -58,9 +59,6 @@ export const PARTNER_LIMITS = {
   email: 254,
 } as const;
 
-/** 改行・タブなどの制御文字を含まない（1 行で入力する項目） */
-const SINGLE_LINE = /^[^\u0000-\u001f\u007f]*$/;
-
 function requiredText(field: PartnerField, max: number) {
   const label = PARTNER_FIELD_LABELS[field];
   return (
@@ -70,7 +68,7 @@ function requiredText(field: PartnerField, max: number) {
       // 空のときは形式のエラーを重ねて出さない
       .min(1, { error: `${label}を入力してください`, abort: true })
       .max(max, `${label}は${max}文字以内で入力してください`)
-      .regex(SINGLE_LINE, `${label}に改行・タブなどの制御文字は使えません`)
+      .regex(SINGLE_LINE, singleLineMessage(label))
   );
 }
 
@@ -162,7 +160,7 @@ const addressSchema = z
     PARTNER_LIMITS.address,
     `住所は${PARTNER_LIMITS.address}文字以内で入力してください`,
   )
-  .regex(SINGLE_LINE, "住所に改行・タブなどの制御文字は使えません");
+  .regex(SINGLE_LINE, singleLineMessage("住所"));
 
 export const partnerInputSchema = z.object({
   code: requiredText("code", PARTNER_LIMITS.code)
