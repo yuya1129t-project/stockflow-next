@@ -1,0 +1,998 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "StockFlow API",
+    "version": "1.0.0",
+    "description": "StockFlow（受発注・在庫管理のデモ）の外部向け REST API です。データはすべて架空です。\n\n## 認証\n`Authorization: Bearer <token>` でトークンを送ります。トークンは admin がユーザー管理画面（ユーザーの詳細）で発行します（表示は発行時の 1 回のみ）。\n画面のログイン（Cookie）では API を使えません。\n\n## 権限\nトークンの持ち主の現在のロールに従います。参照（GET）は admin／staff／viewer、受注の登録（POST）は admin／staff。\n\n## 形式\n- 一覧は `{ data, meta: { page, perPage, total } }`。perPage は既定 20・上限 100\n- 金額（円）・数量は整数、日付は YYYY-MM-DD、日時は ISO 8601（UTC）\n- 商品・取引先・受注はコード・番号で表します（内部の ID は出しません）\n- 日付のパラメーター・項目は 2000〜2099 年の範囲\n- 文字列（クエリ・パスのパラメーター、本文の項目）に NUL（U+0000）を含むと 400\n- エラーは RFC 9457（application/problem+json）。detail は日本語。定義したパスに定義していないメソッドを送ると 405（Allow ヘッダー付き）"
+  },
+  "tags": [
+    {
+      "name": "products",
+      "description": "商品・在庫"
+    },
+    {
+      "name": "sales-orders",
+      "description": "受注"
+    },
+    {
+      "name": "meta",
+      "description": "API の定義"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/api/v1/products": {
+      "get": {
+        "tags": [
+          "products"
+        ],
+        "operationId": "listProducts",
+        "summary": "商品一覧（現在庫を含む）",
+        "description": "商品コードの昇順。無効な商品も含みます（isActive で区別）",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "商品コード・商品名・カテゴリの部分一致（大文字・小文字は区別しない）",
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            }
+          },
+          {
+            "$ref": "#/components/parameters/page"
+          },
+          {
+            "$ref": "#/components/parameters/perPage"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "商品一覧",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/v1/products/{code}/stock": {
+      "get": {
+        "tags": [
+          "products"
+        ],
+        "operationId": "getProductStock",
+        "summary": "商品の現在庫と発注点",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "description": "商品コード（大文字・小文字は区別しない）",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "現在庫と発注点",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductStock"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v1/sales-orders": {
+      "get": {
+        "tags": [
+          "sales-orders"
+        ],
+        "operationId": "listSalesOrders",
+        "summary": "受注一覧",
+        "description": "受注日の新しい順（同じ日は受注番号の降順）",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "ステータスで絞り込む",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "draft",
+                "confirmed",
+                "shipped",
+                "cancelled"
+              ]
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "受注日がこの日以降（YYYY-MM-DD。2000〜2099 年。この日を含む）",
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "受注日がこの日以前（YYYY-MM-DD。2000〜2099 年。この日を含む）。from より前は 400",
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/page"
+          },
+          {
+            "$ref": "#/components/parameters/perPage"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "受注一覧",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesOrderList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "sales-orders"
+        ],
+        "operationId": "createSalesOrder",
+        "summary": "受注の登録（下書き）",
+        "description": "draft（下書き）で作成します。受注日は登録した日（Asia/Tokyo）、受注番号は SO-YYYYMMDD-NNN で採番、単価は商品マスタの売価、金額（小計・消費税・合計）はサーバーで計算します。画面と同じ検証を行い、操作履歴に REST API からの作成として記録します",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SalesOrderCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "作成した受注（明細を含む）",
+            "headers": {
+              "Location": {
+                "description": "作成した受注の URL（/api/v1/sales-orders/{number}）",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesOrder"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "413": {
+            "$ref": "#/components/responses/ContentTooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        }
+      }
+    },
+    "/api/v1/sales-orders/{number}": {
+      "get": {
+        "tags": [
+          "sales-orders"
+        ],
+        "operationId": "getSalesOrder",
+        "summary": "受注詳細（明細を含む）",
+        "parameters": [
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "description": "受注番号（例 SO-20261013-001。大文字・小文字は区別しない）",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "受注詳細",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesOrder"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "operationId": "getOpenApiDocument",
+        "summary": "この API の OpenAPI 3.1 の定義（認証不要）",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.1 の定義",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "PageMeta": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000,
+            "description": "ページ番号（1 始まり）"
+          },
+          "perPage": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "1 ページの件数"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "条件に合う全件数"
+          }
+        },
+        "required": [
+          "page",
+          "perPage",
+          "total"
+        ],
+        "additionalProperties": false,
+        "description": "一覧のページ情報"
+      },
+      "Product": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "商品コード（例 P-0001）"
+          },
+          "name": {
+            "type": "string",
+            "description": "商品名"
+          },
+          "category": {
+            "type": "string",
+            "description": "カテゴリ"
+          },
+          "unit": {
+            "type": "string",
+            "description": "単位"
+          },
+          "salesPrice": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 99999999,
+            "description": "売価（円）"
+          },
+          "purchasePrice": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 99999999,
+            "description": "仕入単価（円）"
+          },
+          "reorderPoint": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9999999,
+            "description": "発注点"
+          },
+          "isActive": {
+            "type": "boolean",
+            "description": "有効か（無効な商品は新規の受注で指定できない）"
+          },
+          "stock": {
+            "type": "integer",
+            "description": "現在庫（入出庫の合計）"
+          },
+          "belowReorderPoint": {
+            "type": "boolean",
+            "description": "発注点割れか（有効な商品で 現在庫 < 発注点）"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "category",
+          "unit",
+          "salesPrice",
+          "purchasePrice",
+          "reorderPoint",
+          "isActive",
+          "stock",
+          "belowReorderPoint"
+        ],
+        "additionalProperties": false,
+        "description": "商品（現在庫を含む）"
+      },
+      "ProductList": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PageMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "additionalProperties": false,
+        "description": "商品一覧"
+      },
+      "ProductStock": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "商品コード"
+          },
+          "name": {
+            "type": "string",
+            "description": "商品名"
+          },
+          "unit": {
+            "type": "string",
+            "description": "単位"
+          },
+          "isActive": {
+            "type": "boolean",
+            "description": "有効か"
+          },
+          "stock": {
+            "type": "integer",
+            "description": "現在庫（入出庫の合計）"
+          },
+          "reorderPoint": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9999999,
+            "description": "発注点"
+          },
+          "belowReorderPoint": {
+            "type": "boolean",
+            "description": "発注点割れか（有効な商品で 現在庫 < 発注点）"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "unit",
+          "isActive",
+          "stock",
+          "reorderPoint",
+          "belowReorderPoint"
+        ],
+        "additionalProperties": false,
+        "description": "商品の現在庫と発注点"
+      },
+      "SalesOrderStatus": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "confirmed",
+          "shipped",
+          "cancelled"
+        ],
+        "description": "受注のステータス（draft 下書き／confirmed 確定／shipped 出荷済／cancelled 取消）"
+      },
+      "CustomerRef": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "取引先コード（例 C-0001）"
+          },
+          "name": {
+            "type": "string",
+            "description": "取引先名"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ],
+        "additionalProperties": false,
+        "description": "顧客"
+      },
+      "ProductRef": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "商品コード"
+          },
+          "name": {
+            "type": "string",
+            "description": "商品名"
+          },
+          "unit": {
+            "type": "string",
+            "description": "単位"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "unit"
+        ],
+        "additionalProperties": false,
+        "description": "明細の商品"
+      },
+      "SalesOrderSummary": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "string",
+            "description": "受注番号（SO-YYYYMMDD-NNN）"
+          },
+          "orderDate": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$",
+            "description": "受注日（YYYY-MM-DD。2000〜2099 年）"
+          },
+          "dueDate": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date",
+                "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "納期（YYYY-MM-DD。2000〜2099 年。未設定は null）"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SalesOrderStatus"
+          },
+          "customer": {
+            "$ref": "#/components/schemas/CustomerRef"
+          },
+          "subtotal": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999999999,
+            "description": "小計（円）"
+          },
+          "tax": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999999999,
+            "description": "消費税（10%、1 円未満切り捨て）（円）"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999999999,
+            "description": "合計（円）"
+          },
+          "note": {
+            "description": "備考（未設定は null）",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lineCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "明細の行数"
+          }
+        },
+        "required": [
+          "number",
+          "orderDate",
+          "dueDate",
+          "status",
+          "customer",
+          "subtotal",
+          "tax",
+          "total",
+          "note",
+          "lineCount"
+        ],
+        "additionalProperties": false,
+        "description": "受注（一覧の 1 件。明細は含まない）"
+      },
+      "SalesOrderList": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SalesOrderSummary"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PageMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "additionalProperties": false,
+        "description": "受注一覧"
+      },
+      "SalesOrderLine": {
+        "type": "object",
+        "properties": {
+          "product": {
+            "$ref": "#/components/schemas/ProductRef"
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9999999,
+            "description": "数量"
+          },
+          "unitPrice": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 99999999,
+            "description": "単価（円。受注時点の値）"
+          },
+          "amount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999999999,
+            "description": "金額（数量 × 単価）（円）"
+          }
+        },
+        "required": [
+          "product",
+          "quantity",
+          "unitPrice",
+          "amount"
+        ],
+        "additionalProperties": false,
+        "description": "受注の明細"
+      },
+      "SalesOrder": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "string",
+            "description": "受注番号（SO-YYYYMMDD-NNN）"
+          },
+          "orderDate": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$",
+            "description": "受注日（YYYY-MM-DD。2000〜2099 年）"
+          },
+          "dueDate": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date",
+                "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "納期（YYYY-MM-DD。2000〜2099 年。未設定は null）"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SalesOrderStatus"
+          },
+          "customer": {
+            "$ref": "#/components/schemas/CustomerRef"
+          },
+          "note": {
+            "description": "備考（未設定は null）",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subtotal": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999999999,
+            "description": "小計（円）"
+          },
+          "tax": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999999999,
+            "description": "消費税（10%、1 円未満切り捨て）（円）"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999999999,
+            "description": "合計（円）"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SalesOrderLine"
+            },
+            "description": "明細（登録した順）"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "作成日時（ISO 8601、UTC）"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "更新日時（ISO 8601、UTC）"
+          }
+        },
+        "required": [
+          "number",
+          "orderDate",
+          "dueDate",
+          "status",
+          "customer",
+          "note",
+          "subtotal",
+          "tax",
+          "total",
+          "lines",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false,
+        "description": "受注（明細を含む）"
+      },
+      "SalesOrderCreateLine": {
+        "type": "object",
+        "properties": {
+          "productCode": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20,
+            "description": "商品コード（大文字・小文字は区別しない）"
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9999999,
+            "description": "数量"
+          }
+        },
+        "required": [
+          "productCode",
+          "quantity"
+        ],
+        "additionalProperties": false,
+        "description": "受注の登録の明細（単価は商品マスタの売価）"
+      },
+      "SalesOrderCreate": {
+        "type": "object",
+        "properties": {
+          "customerCode": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20,
+            "description": "顧客の取引先コード（大文字・小文字は区別しない。種別が顧客か顧客・仕入先で、有効なもの）"
+          },
+          "dueDate": {
+            "description": "納期（YYYY-MM-DD。2000〜2099 年で、受注日以降。省略・null は未設定）",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date",
+                "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "description": "備考（500 文字以内。改行以外の制御文字は不可。省略・null は未設定）",
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lines": {
+            "minItems": 1,
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SalesOrderCreateLine"
+            },
+            "description": "明細（1〜100 行。同じ商品は 1 行にまとめる。有効な商品のみ）"
+          }
+        },
+        "required": [
+          "customerCode",
+          "lines"
+        ],
+        "additionalProperties": false,
+        "description": "受注の登録（draft で作成。受注日は登録した日（Asia/Tokyo））"
+      },
+      "ProblemFieldError": {
+        "type": "object",
+        "properties": {
+          "pointer": {
+            "description": "本文の項目の JSON Pointer（例 #/lines/0/quantity）",
+            "type": "string"
+          },
+          "parameter": {
+            "description": "クエリ・パスのパラメーター名（例 perPage）",
+            "type": "string"
+          },
+          "detail": {
+            "type": "string",
+            "description": "エラーの内容（日本語）"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "additionalProperties": false,
+        "description": "項目ごとのエラー（本文の項目は pointer、クエリ・パスのパラメーターは parameter で示す）"
+      },
+      "Problem": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "問題の種類の URI。この API では about:blank（HTTP のステータスどおりの意味）"
+          },
+          "title": {
+            "type": "string",
+            "description": "HTTP のステータスの説明（英語）"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599,
+            "description": "HTTP のステータスコード"
+          },
+          "detail": {
+            "type": "string",
+            "description": "エラーの内容（日本語）"
+          },
+          "errors": {
+            "description": "項目ごとのエラー（400 の検証エラーのとき）",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProblemFieldError"
+            }
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail"
+        ],
+        "additionalProperties": false,
+        "description": "エラー（RFC 9457 Problem Details。Content-Type は application/problem+json）"
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "リクエストの誤り。検証エラーは errors に項目ごとの内容（本文の項目は pointer、クエリ・パスは parameter）",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "認証の失敗（Authorization ヘッダーがない・形式が違う・トークンが存在しない・失効済み・ユーザーが無効。理由は区別しない）",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "常に Bearer realm=\"StockFlow API\"",
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "トークンの持ち主のロールに、この操作の権限がない",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "対象が見つからない",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "ContentTooLarge": {
+        "description": "本文が大きすぎる（上限 65536 バイト）",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "UnsupportedMediaType": {
+        "description": "本文が JSON（Content-Type: application/json、UTF-8）でない。Accept-Post: application/json を返す",
+        "headers": {
+          "Accept-Post": {
+            "description": "受け付ける Content-Type",
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "page": {
+        "name": "page",
+        "in": "query",
+        "description": "ページ番号（1 始まり）。全件数を超えるページは data が空になる",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000,
+          "default": 1
+        }
+      },
+      "perPage": {
+        "name": "perPage",
+        "in": "query",
+        "description": "1 ページの件数（既定 20・上限 100）",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "API トークン（sf_ で始まる文字列）。admin がユーザー管理画面で発行する"
+      }
+    }
+  }
+}

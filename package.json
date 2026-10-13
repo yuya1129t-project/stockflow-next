@@ -22,7 +22,8 @@
     "db:migrate": "prisma migrate dev && prisma generate",
     "db:seed": "prisma db seed",
     "db:reset": "tsx scripts/check-db-target.ts && prisma migrate reset --force && prisma db seed",
-    "db:test:reset": "tsx scripts/with-test-db.ts prisma migrate deploy && tsx scripts/with-test-db.ts prisma db seed"
+    "db:test:reset": "tsx scripts/with-test-db.ts prisma migrate deploy && tsx scripts/with-test-db.ts prisma db seed",
+    "openapi:generate": "tsx scripts/generate-openapi.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -47,6 +48,8 @@
     "@types/node": "^24.19.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "dotenv": "18.0.7",
     "eslint": "^9",
     "eslint-config-next": "16.4.0",

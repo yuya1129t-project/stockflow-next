@@ -153,13 +153,15 @@ function lineData(lines: readonly OrderLineInput[]) {
 }
 
 /**
- * 受注を作成する（draft）。受注日は作成した日（Asia/Tokyo）で、番号は SO-受注日-連番
+ * 受注を作成する（draft）。受注日は作成した日（Asia/Tokyo）で、番号は SO-受注日-連番。
+ * REST API（#11）から作成したときは options.apiTokenId を渡す（操作履歴の summary に経路とトークンの ID を残す）
  */
 export async function createSalesOrder(
   db: PrismaClient,
   user: SessionUser | null,
   input: unknown,
   now: Date = new Date(),
+  options: { apiTokenId?: number } = {},
 ): Promise<SalesOrderMutationResult<{ id: number; number: string }>> {
   const auth = checkRole(user, "order:edit");
   if (!auth.ok) return auth;
@@ -214,7 +216,7 @@ export async function createSalesOrder(
           action: "create",
           targetType: SALES_ORDER_TARGET_TYPE,
           targetId: String(created.id),
-          summary: `受注 ${number} を作成しました（顧客 ${customer.partner.code}「${customer.partner.name}」・明細 ${data.lines.length} 行・合計 ${formatNumber(amounts.total)} 円）`,
+          summary: `受注 ${number} を作成しました（顧客 ${customer.partner.code}「${customer.partner.name}」・明細 ${data.lines.length} 行・合計 ${formatNumber(amounts.total)} 円${options.apiTokenId === undefined ? "" : `・REST API（トークン #${options.apiTokenId}）から作成`}）`,
         },
       });
       return { ok: true, data: { id: created.id, number } };
