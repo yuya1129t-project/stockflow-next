@@ -6,6 +6,7 @@
  * DB やフレームワークに依存しない純粋なモジュール（クライアントからも import できる）
  */
 import { z } from "zod";
+import { SINGLE_LINE, singleLineMessage } from "@/lib/validation/text";
 
 /** 項目名（画面のラベル・CSV の見出し・エラー文で共通） */
 export const PRODUCT_FIELD_LABELS = {
@@ -45,10 +46,7 @@ function requiredText(field: ProductField, max: number) {
       .min(1, { error: `${label}を入力してください`, abort: true })
       .max(max, `${label}は${max}文字以内で入力してください`)
       // 1 行で入力する項目（CSV の引用の中の改行・タブなども受け付けない）
-      .regex(
-        /^[^\u0000-\u001f\u007f]*$/,
-        `${label}に改行・タブなどの制御文字は使えません`,
-      )
+      .regex(SINGLE_LINE, singleLineMessage(label))
   );
 }
 

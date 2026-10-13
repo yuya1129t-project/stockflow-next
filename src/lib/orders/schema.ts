@@ -12,6 +12,7 @@
 import { z } from "zod";
 
 import { normalizeDigits, PRODUCT_LIMITS } from "@/lib/products/schema";
+import { MULTI_LINE } from "@/lib/validation/text";
 
 import { calcOrderAmounts, ORDER_TOTAL_MAX } from "./amounts";
 import { parseDateOnly } from "./dates";
@@ -212,10 +213,7 @@ export const orderNoteSchema = z
         ORDER_LINE_LIMITS.note,
         `備考は${ORDER_LINE_LIMITS.note}文字以内で入力してください`,
       )
-      .regex(
-        /^[^\u0000-\u0009\u000b-\u001f\u007f]*$/,
-        "備考にタブなどの制御文字は使えません",
-      ),
+      .regex(MULTI_LINE, "備考にタブなどの制御文字は使えません"),
   )
   .transform((value) => (value === "" ? null : value));
 

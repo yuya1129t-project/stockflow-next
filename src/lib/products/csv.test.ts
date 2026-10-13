@@ -193,6 +193,26 @@ describe("parseProductImport（取込の検証）", () => {
     ]);
   });
 
+  it("行区切り（U+2028）・表示方向の制御（U+202E）を含むセルもエラー", () => {
+    const result = parse([
+      HEADER,
+      row("T-1", { 商品名: "名前\u2028次" }),
+      row("T-2", { カテゴリ: "文具\u202e" + "反転" }),
+    ]);
+    expect(!result.ok && result.errors).toEqual([
+      {
+        line: 2,
+        field: "商品名",
+        message: "商品名に改行・タブなどの制御文字は使えません",
+      },
+      {
+        line: 3,
+        field: "カテゴリ",
+        message: "カテゴリに改行・タブなどの制御文字は使えません",
+      },
+    ]);
+  });
+
   it("列が見出しより多い・少ない行は、その行を 1 件のエラーにする（列ずれのまま取り込まない）", () => {
     const text =
       HEADER.join(",") +

@@ -110,6 +110,39 @@ describe("partnerInputSchema", () => {
     },
   );
 
+  it.each(["name", "address"] as const)(
+    "%s に行区切り・表示方向の制御・BOM・C1 制御があるとエラー",
+    (field) => {
+      for (const char of [
+        "\u2028",
+        "\u2029",
+        "\u200e",
+        "\u200f",
+        "\u202a",
+        "\u202e",
+        "\u2066",
+        "\u2069",
+        "\ufeff",
+        "\u0085",
+        "\u009f",
+      ]) {
+        expect(errorsOf({ [field]: `あ${char}い` })[field]?.[0]).toMatch(
+          /改行・タブなどの制御文字は使えません$/,
+        );
+      }
+    },
+  );
+
+  it("日本語・記号・絵文字は通る", () => {
+    const parsed = partnerInputSchema.parse({
+      ...VALID,
+      name: "株式会社テスト（東京）😀",
+      address: "東京都千代田区1-1-1　ビル２階",
+    });
+    expect(parsed.name).toBe("株式会社テスト（東京）😀");
+    expect(parsed.address).toBe("東京都千代田区1-1-1　ビル２階");
+  });
+
   it("種別は customer／supplier／both のどれか", () => {
     for (const kind of ["customer", "supplier", "both"]) {
       expect(partnerInputSchema.parse({ ...VALID, kind }).kind).toBe(kind);
