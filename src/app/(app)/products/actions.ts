@@ -90,7 +90,12 @@ function importError(message: string, fileName?: string): ImportProductsState {
 /** ファイル名を操作履歴・画面に出せる形にする（制御文字を除き、長さを制限） */
 function displayFileName(name: string): string {
   return (
-    name.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 100) || "（名前なし）"
+    name
+      .replace(
+        /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g,
+        "",
+      )
+      .slice(0, 100) || "（名前なし）"
   );
 }
 
