@@ -95,6 +95,26 @@ function isTimeout(error: unknown): boolean {
   return name === "TimeoutError" || name === "AbortError";
 }
 
+/**
+ * 失敗の原因をサーバー側のログに残す（zipcloud の障害・仕様変更に気付くため）。
+ * 郵便番号・利用者の情報は含めない。利用者への表示は決まった文言だけ（ADDRESS_LOOKUP_MESSAGES）
+ */
+function fail(
+  reason: AddressLookupFailure,
+  detail?: string,
+): AddressLookupResult {
+  console.warn(
+    `[address-lookup] zipcloud の呼び出しに失敗しました: ${reason}${detail ? `（${detail}）` : ""}`,
+  );
+  return { ok: false, reason };
+}
+
+function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = (error.cause as { code?: unknown } | undefined)?.code;
+  return `${error.name}: ${error.message}${cause ? ` [${String(cause)}]` : ""}`;
+}
+
 /** 郵便番号（ハイフン有無どちらでも）から住所の候補を得る */
 export async function lookupAddress(
   input: string,
@@ -116,19 +136,47 @@ export async function lookupAddress(
         options.timeoutMs ?? ADDRESS_LOOKUP_TIMEOUT_MS,
       ),
       cache: "no-store",
+      // 宛先は固定。リダイレクトはたどらずエラーにする
+      redirect: "error",
     });
-    if (!response.ok) return { ok: false, reason: "unavailable" };
+    if (!response.ok) return fail("unavailable", `HTTP ${response.status}`);
     let body: unknown;
     try {
       body = await response.json();
     } catch (error) {
-      if (isTimeout(error)) return { ok: false, reason: "timeout" };
-      return { ok: false, reason: "invalid_response" };
+      return fail(
+        isTimeout(error) ? "timeout" : "invalid_response",
+        describeError(error),
+      );
     }
-    return parseZipcloudResponse(postalCode, body);
+    const result = parseZipcloudResponse(postalCode, body);
+    if (!result.ok && result.reason !== "not_found") {
+      const status = (body as { status?: unknown } | null)?.status;
+      return fail(result.reason, `応答の status: ${String(status)}`);
+    }
+    return result;
   } catch (error) {
-    return { ok: false, reason: isTimeout(error) ? "timeout" : "unavailable" };
+    return fail(
+      isTimeout(error) ? "timeout" : "unavailable",
+      describeError(error),
+    );
   }
+}
+
+/**
+ * 画面側: 住所検索の応答を使ってよいか。検索を始めた後に別の検索が始まった（識別子が変わった）、
+ * または郵便番号・住所の入力が変わったときは、古い結果で入力を上書きしないよう捨てる
+ */
+export function isLookupResultCurrent(
+  started: { requestId: number; postalCode: string; address: string },
+  current: { requestId: number; postalCode: string; address: string },
+): boolean {
+  return (
+    started.requestId === current.requestId &&
+    normalizePostalCode(started.postalCode) ===
+      normalizePostalCode(current.postalCode) &&
+    started.address === current.address
+  );
 }
 
 /** 画面に出すメッセージ（どの失敗でも手入力を続けられることを示す） */

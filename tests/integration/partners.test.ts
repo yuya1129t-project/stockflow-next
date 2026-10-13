@@ -147,20 +147,28 @@ describe("一覧（検索・絞り込み・並べ替え・ページ送り）", (
     ).toEqual([id]);
   });
 
-  it("種別で絞り込める（完全一致）", async () => {
-    const both = await create(`${PREFIX}KIND-BOTH`, { kind: "both" });
-    for (const kind of ["customer", "supplier", "both"] as const) {
-      const result = await listPartners(
-        prisma,
-        params({ kind, status: "all" }),
-      );
-      expect(result.total).toBe(
-        await prisma.partner.count({ where: { kind } }),
-      );
-      expect(result.items.every((p) => p.kind === kind)).toBe(true);
-    }
-    const customers = await listPartners(prisma, params({ kind: "customer" }));
-    expect(customers.items.map((p) => p.id)).not.toContain(both);
+  it("種別の絞り込み: 「顧客」は customer と both、「仕入先」は supplier と both、「顧客・仕入先」は both だけ", async () => {
+    const c = await create(`${PREFIX}KIND-C`, { kind: "customer" });
+    const s = await create(`${PREFIX}KIND-S`, { kind: "supplier" });
+    const b = await create(`${PREFIX}KIND-B`, { kind: "both" });
+    const q = `${PREFIX}KIND-`;
+    const ids = async (kind: "customer" | "supplier" | "both") =>
+      (await listPartners(prisma, params({ q, kind }))).items
+        .map((p) => p.id)
+        .sort((x, y) => x - y);
+    expect(await ids("customer")).toEqual([c, b].sort((x, y) => x - y));
+    expect(await ids("supplier")).toEqual([s, b].sort((x, y) => x - y));
+    expect(await ids("both")).toEqual([b]);
+
+    // シード全体でも件数が合う
+    expect(
+      (await listPartners(prisma, params({ kind: "supplier", status: "all" })))
+        .total,
+    ).toBe(
+      await prisma.partner.count({
+        where: { kind: { in: ["supplier", "both"] } },
+      }),
+    );
   });
 
   it("取引先名・種別で並べ替えられる（昇順・降順）", async () => {
@@ -384,6 +392,125 @@ describe("登録・編集", () => {
       email: seed.email ?? "",
     });
     expect(result).toEqual({ ok: true, data: null });
+    expect(await prisma.auditLog.count()).toBe(before);
+  });
+});
+
+describe("種別の変更（使用中の受注・発注と矛盾させない）", () => {
+  it("受注のある顧客（シードの C-0001）を仕入先に変えると、種別のエラーで拒否する（何も書き換えない）", async () => {
+    const seed = await prisma.partner.findUniqueOrThrow({
+      where: { code: "C-0001" },
+    });
+    const orders = await prisma.salesOrder.count({
+      where: { customerId: seed.id },
+    });
+    expect(orders).toBeGreaterThan(0);
+    const before = await prisma.auditLog.count();
+    const result = await updatePartner(prisma, STAFF, seed.id, {
+      code: seed.code,
+      name: seed.name,
+      kind: "supplier",
+      postalCode: seed.postalCode ?? "",
+      address: seed.address ?? "",
+      phone: seed.phone ?? "",
+      email: seed.email ?? "",
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: "入力内容に誤りがあります。各項目を確認してください",
+      fieldErrors: {
+        kind: [
+          `受注（${orders} 件）で使われているため、顧客の役割を外せません（「顧客」か「顧客・仕入先」にしてください）`,
+        ],
+      },
+    });
+    expect(
+      (await prisma.partner.findUniqueOrThrow({ where: { id: seed.id } })).kind,
+    ).toBe("customer");
+    expect(await prisma.auditLog.count()).toBe(before);
+  });
+
+  it("発注のある仕入先（シードの S-0001）を顧客に変えると拒否する", async () => {
+    const seed = await prisma.partner.findUniqueOrThrow({
+      where: { code: "S-0001" },
+    });
+    expect(
+      await prisma.purchaseOrder.count({ where: { supplierId: seed.id } }),
+    ).toBeGreaterThan(0);
+    const result = await updatePartner(prisma, STAFF, seed.id, {
+      code: seed.code,
+      name: seed.name,
+      kind: "customer",
+      postalCode: seed.postalCode ?? "",
+      address: seed.address ?? "",
+      phone: seed.phone ?? "",
+      email: seed.email ?? "",
+    });
+    expect(!result.ok && result.fieldErrors?.kind?.[0]).toMatch(
+      /^発注（\d+ 件）で使われているため、仕入先の役割を外せません/,
+    );
+    expect(
+      (await prisma.partner.findUniqueOrThrow({ where: { id: seed.id } })).kind,
+    ).toBe("supplier");
+  });
+
+  it("受注・発注のない取引先は種別を変えられる", async () => {
+    const id = await create(`${PREFIX}KIND-FREE`, { kind: "customer" });
+    expect(
+      (
+        await updatePartner(
+          prisma,
+          STAFF,
+          id,
+          form(`${PREFIX}KIND-FREE`, { kind: "supplier" }),
+        )
+      ).ok,
+    ).toBe(true);
+    expect((await getPartner(prisma, id))?.kind).toBe("supplier");
+  });
+});
+
+describe("トランザクション（操作履歴の保存に失敗したら取引先の変更も巻き戻す）", () => {
+  // 存在しないユーザー ID（ロールは許可されたもの）。AuditLog の外部キー制約で履歴の保存だけが失敗する
+  const GHOST_STAFF: SessionUser = { ...STAFF, id: "zp-ghost-user" };
+  const GHOST_ADMIN: SessionUser = { ...ADMIN, id: "zp-ghost-user" };
+
+  it("登録: 取引先は作られない", async () => {
+    const before = await prisma.auditLog.count();
+    await expect(
+      createPartner(prisma, GHOST_STAFF, form(`${PREFIX}TX-NEW`)),
+    ).rejects.toThrow();
+    expect(
+      await prisma.partner.count({ where: { code: `${PREFIX}TX-NEW` } }),
+    ).toBe(0);
+    expect(await prisma.auditLog.count()).toBe(before);
+  });
+
+  it("編集: 取引先は変更前の値のまま", async () => {
+    const id = await create(`${PREFIX}TX-EDIT`);
+    const before = await prisma.auditLog.count();
+    await expect(
+      updatePartner(
+        prisma,
+        GHOST_STAFF,
+        id,
+        form(`${PREFIX}TX-EDIT`, { name: "書き換え後", kind: "both" }),
+      ),
+    ).rejects.toThrow();
+    expect(await getPartner(prisma, id)).toMatchObject({
+      name: `結合テスト取引先 ${PREFIX}TX-EDIT`,
+      kind: "customer",
+    });
+    expect(await prisma.auditLog.count()).toBe(before);
+  });
+
+  it("無効化: 取引先は有効のまま", async () => {
+    const id = await create(`${PREFIX}TX-ACTIVE`);
+    const before = await prisma.auditLog.count();
+    await expect(
+      setPartnerActive(prisma, GHOST_ADMIN, id, false),
+    ).rejects.toThrow();
+    expect((await getPartner(prisma, id))?.isActive).toBe(true);
     expect(await prisma.auditLog.count()).toBe(before);
   });
 });

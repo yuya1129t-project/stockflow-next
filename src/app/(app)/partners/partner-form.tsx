@@ -2,7 +2,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import Link from "next/link";
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -12,7 +12,10 @@ import {
   NativeSelect,
   NativeSelectOption,
 } from "@/components/ui/native-select";
-import { ADDRESS_LOOKUP_MESSAGES } from "@/lib/partners/address-lookup";
+import {
+  ADDRESS_LOOKUP_MESSAGES,
+  isLookupResultCurrent,
+} from "@/lib/partners/address-lookup";
 import {
   normalizePostalCode,
   PARTNER_FIELD_LABELS,
@@ -151,6 +154,8 @@ export function PartnerForm({
   });
   const [formError, setFormError] = useState<string>();
   const [lookup, setLookup] = useState<LookupState>({ status: "idle" });
+  // 住所検索のリクエストの識別子。郵便番号を変えたら進めて、検索中の古い応答を捨てる
+  const lookupRequestId = useRef(0);
   const [pending, startTransition] = useTransition();
   const { errors } = form.formState;
 
@@ -184,6 +189,13 @@ export function PartnerForm({
     },
   });
 
+  // 郵便番号を変えたら、検索中の応答・前の候補を無効にする
+  function invalidateLookup() {
+    lookupRequestId.current++;
+    setLookup({ status: "idle" });
+  }
+  const postalCodeField = form.register("postalCode");
+
   function fillAddress(address: string) {
     form.setValue("address", address, {
       shouldDirty: true,
@@ -205,8 +217,26 @@ export function PartnerForm({
       });
       return;
     }
+    const lookupInputs = () => ({
+      requestId: lookupRequestId.current,
+      postalCode: form.getValues("postalCode"),
+      address: form.getValues("address"),
+    });
+    lookupRequestId.current++;
+    const started = lookupInputs();
     setLookup({ status: "loading" });
     const result = await fetchAddresses(postalCode);
+    // 検索中に郵便番号・住所が変わった（または次の検索が始まった）ら、古い結果で上書きしない
+    if (!isLookupResultCurrent(started, lookupInputs())) {
+      if (started.requestId === lookupRequestId.current) {
+        setLookup({
+          status: "done",
+          message:
+            "検索中に入力が変わったため、検索結果は使いませんでした。必要ならもう一度検索してください",
+        });
+      }
+      return;
+    }
     if (!result.ok) {
       setLookup({ status: "error", message: result.message });
       return;
@@ -324,13 +354,11 @@ export function PartnerForm({
               className="w-36"
               aria-invalid={postalError ? true : undefined}
               aria-describedby="partner-postalCode-message partner-lookup-message"
-              {...form.register("postalCode", {
-                onChange: () => {
-                  if (lookup.status !== "loading") {
-                    setLookup({ status: "idle" });
-                  }
-                },
-              })}
+              {...postalCodeField}
+              onChange={(event) => {
+                invalidateLookup();
+                return postalCodeField.onChange(event);
+              }}
             />
             <Button
               type="button"

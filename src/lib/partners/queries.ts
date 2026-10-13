@@ -7,6 +7,7 @@ import {
   nextPartnerCode,
   PARTNER_CODE_PREFIXES,
   PARTNER_KINDS,
+  partnerKindsFor,
   type PartnerKind,
 } from "./schema";
 import { PARTNERS_PER_PAGE, type PartnerListParams } from "./search-params";
@@ -52,6 +53,14 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
+/**
+ * 一覧の種別の絞り込み: 「顧客」は customer と both、「仕入先」は supplier と both（spec §3 の顧客・仕入先の定義）。
+ * 「顧客・仕入先」は both だけ
+ */
+export function kindFilter(kind: PartnerKind): PartnerKind[] {
+  return kind === "both" ? ["both"] : partnerKindsFor(kind);
+}
+
 function where({
   q,
   kind,
@@ -67,7 +76,7 @@ function where({
       ],
     });
   }
-  if (kind) conditions.push({ kind });
+  if (kind) conditions.push({ kind: { in: kindFilter(kind) } });
   if (status === "active") conditions.push({ isActive: true });
   if (status === "inactive") conditions.push({ isActive: false });
   return { AND: conditions };

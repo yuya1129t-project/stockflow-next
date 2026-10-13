@@ -30,6 +30,7 @@ import {
 } from "@/lib/partners/schema";
 import {
   parsePartnerListParams,
+  PARTNER_KIND_FILTER_LABELS,
   PARTNER_STATUS_LABELS,
   PARTNER_STATUSES,
   toPartnerListQuery,
@@ -103,7 +104,7 @@ export default async function PartnersPage({
             <NativeSelectOption value="">すべて</NativeSelectOption>
             {PARTNER_KINDS.map((kind) => (
               <NativeSelectOption key={kind} value={kind}>
-                {PARTNER_KIND_LABELS[kind]}
+                {PARTNER_KIND_FILTER_LABELS[kind]}
               </NativeSelectOption>
             ))}
           </NativeSelect>

@@ -33,6 +33,22 @@ export const PARTNER_KIND_LABELS: Record<PartnerKind, string> = {
   both: "顧客・仕入先",
 };
 
+/** 取引先の役割（受注の顧客・発注の仕入先） */
+export type PartnerRole = "customer" | "supplier";
+
+/**
+ * その役割を持つ種別（spec §3: 顧客は customer か both、仕入先は supplier か both）。
+ * 一覧の絞り込みと、受注・発注（#7・#8）の取引先の選択肢で使う
+ */
+export function partnerKindsFor(role: PartnerRole): PartnerKind[] {
+  return [role, "both"];
+}
+
+/** 種別がその役割を持つか */
+export function hasPartnerRole(kind: PartnerKind, role: PartnerRole): boolean {
+  return partnerKindsFor(role).includes(kind);
+}
+
 /** 文字数の上限 */
 export const PARTNER_LIMITS = {
   code: 20,

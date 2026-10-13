@@ -18,12 +18,19 @@ export const PARTNER_STATUS_LABELS: Record<PartnerStatusFilter, string> = {
   inactive: "無効のみ",
 };
 
+/** 一覧の種別の絞り込みの選択肢（「顧客」「仕入先」は両方の役割を持つ取引先も含む） */
+export const PARTNER_KIND_FILTER_LABELS: Record<PartnerKind, string> = {
+  customer: "顧客（顧客・仕入先を含む）",
+  supplier: "仕入先（顧客・仕入先を含む）",
+  both: "顧客・仕入先のみ",
+};
+
 export type SortOrder = "asc" | "desc";
 
 export interface PartnerListParams {
   /** 取引先コード・取引先名の部分一致 */
   q: string;
-  /** 種別（完全一致。空ならすべて） */
+  /** 種別（customer は both を含む、supplier も both を含む、both は both だけ。空ならすべて） */
   kind: PartnerKind | "";
   status: PartnerStatusFilter;
   sort: PartnerSortKey;

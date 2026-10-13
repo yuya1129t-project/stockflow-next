@@ -2,11 +2,12 @@
  * 郵便番号 → 住所（zipcloud）の応答の解釈と、通信の失敗の扱い。
  * 外部 API は呼ばない（fetch をモックに差し替える）。住所はすべて架空の値
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ADDRESS_LOOKUP_MESSAGES,
   ADDRESS_LOOKUP_TIMEOUT_MS,
+  isLookupResultCurrent,
   lookupAddress,
   parseZipcloudResponse,
   ZIPCLOUD_ENDPOINT,
@@ -133,6 +134,15 @@ describe("parseZipcloudResponse（応答の解釈）", () => {
 });
 
 describe("lookupAddress（通信）", () => {
+  // 失敗時はサーバー側のログに原因を残す（テストでは出力を止めて、呼ばれたことだけ確かめる）
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
   it("タイムアウトは 3 秒（spec §6）", () => {
     expect(ADDRESS_LOOKUP_TIMEOUT_MS).toBe(3_000);
   });
@@ -154,6 +164,9 @@ describe("lookupAddress（通信）", () => {
     const [url, init] = fetch.mock.calls[0];
     expect(url).toBe(`${ZIPCLOUD_ENDPOINT}?zipcode=0000001`);
     expect(init?.method).toBe("GET");
+    // 宛先は固定。リダイレクトはたどらない
+    expect(init?.redirect).toBe("error");
+    expect(warn).not.toHaveBeenCalled();
     expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
@@ -258,6 +271,63 @@ describe("lookupAddress（通信）", () => {
       ok: false,
       reason: "invalid_response",
     });
+  });
+});
+
+describe("lookupAddress（サーバー側のログ）", () => {
+  it("失敗の原因を console.warn に残す（郵便番号は含めない）。該当なし・形式エラーは残さない", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await lookupAddress("0000001", {
+        fetch: mockFetch(async () => jsonResponse({}, { status: 503 })),
+      });
+      await lookupAddress("0000001", {
+        fetch: mockFetch(async () => {
+          throw new TypeError("fetch failed");
+        }),
+      });
+      await lookupAddress("0000001", {
+        fetch: mockFetch(async () => jsonResponse({ status: "x" })),
+      });
+      expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+        "[address-lookup] zipcloud の呼び出しに失敗しました: unavailable（HTTP 503）",
+        "[address-lookup] zipcloud の呼び出しに失敗しました: unavailable（TypeError: fetch failed）",
+        "[address-lookup] zipcloud の呼び出しに失敗しました: invalid_response（応答の status: x）",
+      ]);
+      warn.mockClear();
+      await lookupAddress("0000001", {
+        fetch: mockFetch(async () => jsonResponse(zipcloudBody(null))),
+      });
+      await lookupAddress("12", {
+        fetch: mockFetch(async () => jsonResponse({})),
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe("isLookupResultCurrent（検索中に入力が変わったら結果を捨てる）", () => {
+  const started = { requestId: 3, postalCode: "000-0001", address: "" };
+
+  it("識別子・郵便番号・住所が検索開始時と同じなら使う（郵便番号の書き方の違いは同じとみなす）", () => {
+    expect(isLookupResultCurrent(started, { ...started })).toBe(true);
+    expect(
+      isLookupResultCurrent(started, { ...started, postalCode: "0000001" }),
+    ).toBe(true);
+  });
+
+  it("次の検索が始まった・郵便番号を変えた・住所を手入力したら捨てる", () => {
+    expect(isLookupResultCurrent(started, { ...started, requestId: 4 })).toBe(
+      false,
+    );
+    expect(
+      isLookupResultCurrent(started, { ...started, postalCode: "000-0002" }),
+    ).toBe(false);
+    expect(
+      isLookupResultCurrent(started, { ...started, address: "手入力した住所" }),
+    ).toBe(false);
   });
 });
 

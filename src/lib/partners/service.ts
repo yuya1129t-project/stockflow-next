@@ -16,6 +16,7 @@ import type { Action } from "@/lib/auth/permissions";
 
 import {
   formatPostalCode,
+  hasPartnerRole,
   PARTNER_FIELD_LABELS,
   PARTNER_FIELDS,
   PARTNER_KIND_LABELS,
@@ -136,6 +137,49 @@ function pickInput(partner: PartnerInput): PartnerInput {
   ) as PartnerInput;
 }
 
+type Tx = Parameters<Parameters<PrismaClient["$transaction"]>[0]>[0];
+
+/**
+ * 種別の変更で、使用中の受注・発注と矛盾しないか（spec §3: 受注の顧客は customer か both、
+ * 発注の仕入先は supplier か both）。顧客・仕入先の役割を外す変更で、その役割の受注・発注があれば種別のエラー
+ */
+async function checkKindChange(
+  tx: Tx,
+  id: number,
+  before: PartnerInput["kind"],
+  after: PartnerInput["kind"],
+): Promise<PartnerMutationError | null> {
+  const messages: string[] = [];
+  if (
+    hasPartnerRole(before, "customer") &&
+    !hasPartnerRole(after, "customer")
+  ) {
+    const count = await tx.salesOrder.count({ where: { customerId: id } });
+    if (count > 0) {
+      messages.push(
+        `受注（${count} 件）で使われているため、顧客の役割を外せません（「顧客」か「顧客・仕入先」にしてください）`,
+      );
+    }
+  }
+  if (
+    hasPartnerRole(before, "supplier") &&
+    !hasPartnerRole(after, "supplier")
+  ) {
+    const count = await tx.purchaseOrder.count({ where: { supplierId: id } });
+    if (count > 0) {
+      messages.push(
+        `発注（${count} 件）で使われているため、仕入先の役割を外せません（「仕入先」か「顧客・仕入先」にしてください）`,
+      );
+    }
+  }
+  if (messages.length === 0) return null;
+  return {
+    ok: false,
+    error: INVALID_INPUT_MESSAGE,
+    fieldErrors: { kind: messages },
+  };
+}
+
 /** 取引先を編集する（取引先コードも変更できる。一意でなければエラー） */
 export async function updatePartner(
   db: PrismaClient,
@@ -155,6 +199,8 @@ export async function updatePartner(
       const changes = describePartnerChanges(pickInput(before), data);
       // 変更がなければ何もしない（操作履歴も残さない）
       if (changes.length === 0) return DONE;
+      const kindError = await checkKindChange(tx, id, before.kind, data.kind);
+      if (kindError) return kindError;
       await tx.partner.update({ where: { id }, data });
       await tx.auditLog.create({
         data: {

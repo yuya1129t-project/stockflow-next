@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   emptyPartnerForm,
   formatPostalCode,
+  hasPartnerRole,
   nextPartnerCode,
   normalizePostalCode,
   partnerFieldErrors,
   partnerInputSchema,
+  partnerKindsFor,
   toPartnerFormValues,
   type PartnerFormValues,
 } from "./schema";
@@ -234,5 +236,16 @@ describe("nextPartnerCode（登録画面で提案するコード）", () => {
 
   it("9999 を超えたら桁を増やす", () => {
     expect(nextPartnerCode("customer", ["C-9999"])).toBe("C-10000");
+  });
+});
+
+describe("partnerKindsFor・hasPartnerRole（spec §3: 顧客は customer か both、仕入先は supplier か both）", () => {
+  it("役割ごとの種別", () => {
+    expect(partnerKindsFor("customer")).toEqual(["customer", "both"]);
+    expect(partnerKindsFor("supplier")).toEqual(["supplier", "both"]);
+    expect(hasPartnerRole("both", "customer")).toBe(true);
+    expect(hasPartnerRole("both", "supplier")).toBe(true);
+    expect(hasPartnerRole("customer", "supplier")).toBe(false);
+    expect(hasPartnerRole("supplier", "customer")).toBe(false);
   });
 });
