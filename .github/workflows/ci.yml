@@ -58,3 +58,54 @@ jobs:
       - run: pnpm db:test:reset
       - run: pnpm test
       - run: pnpm build
+
+  # E2E テスト（Playwright）。本番ビルドを E2E 用 DB に向けて起動し、chromium で画面を操作する
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: stockflow
+          POSTGRES_PASSWORD: stockflow
+          POSTGRES_DB: stockflow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stockflow -d stockflow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # E2E 用 DB（テスト前に e2e/global-setup.ts がマイグレーション＋シードで初期化する）
+      DATABASE_URL_TEST: postgresql://stockflow:stockflow@localhost:5432/stockflow_test?schema=public
+      # 認証（Better Auth）の CI 専用ダミー値。BETTER_AUTH_URL は playwright.config.ts で E2E のサーバーに合わせる
+      BETTER_AUTH_SECRET: ci-dummy-secret-not-for-production-0123456789
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      # chromium と、その実行に必要な OS のパッケージ（CI の Ubuntu 上でだけ --with-deps を使う）
+      - run: pnpm exec playwright install --with-deps chromium
+      # webServer（playwright.config.ts）がビルドと起動を行う
+      - run: pnpm test:e2e
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
