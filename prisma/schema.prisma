@@ -218,6 +218,8 @@ model SalesOrderLine {
   quantity     Int
   unitPrice    Int
 
+  // 同じ受注に同じ商品の明細は 1 行だけ（数量は 1 行にまとめる）
+  @@unique([salesOrderId, productId])
   @@index([salesOrderId])
   @@index([productId])
   @@map("sales_order_line")
@@ -263,6 +265,8 @@ model PurchaseOrderLine {
   quantity        Int
   unitPrice       Int
 
+  // 同じ発注に同じ商品の明細は 1 行だけ（数量は 1 行にまとめる）
+  @@unique([purchaseOrderId, productId])
   @@index([purchaseOrderId])
   @@index([productId])
   @@map("purchase_order_line")
