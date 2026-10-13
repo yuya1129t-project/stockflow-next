@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/table";
 import { requirePermission } from "@/lib/auth/guards";
 import { can } from "@/lib/auth/permissions";
+import { purchaseOrderPath, salesOrderPath } from "@/lib/dashboard/paths";
 import { getPrisma } from "@/lib/db";
 import { formatDateTime, formatNumber, formatSignedNumber } from "@/lib/format";
 import { getProduct } from "@/lib/products/queries";
@@ -34,14 +35,18 @@ export const metadata: Metadata = { title: "入出庫履歴 | StockFlow" };
 
 const REF_LABELS = { sales_order: "受注", purchase_order: "発注" } as const;
 
-/** 参照元の伝票。発注は詳細へのリンク（受注は画面ができるまでテキストで表示する） */
+/** 参照元の伝票（受注・発注の詳細へのリンク。伝票が見つからなければテキスト） */
 function RefCell({ target }: { target: StockMovementListItem["ref"] }) {
   if (!target) return "—";
   const text = `${REF_LABELS[target.type]} ${target.number ?? `#${target.id}`}`;
-  if (target.type === "purchase_order" && target.number !== null) {
+  if (target.number !== null) {
     return (
       <Link
-        href={`/purchase-orders/${target.id}`}
+        href={
+          target.type === "sales_order"
+            ? salesOrderPath(target.id)
+            : purchaseOrderPath(target.id)
+        }
         className="underline-offset-4 hover:underline"
       >
         {text}

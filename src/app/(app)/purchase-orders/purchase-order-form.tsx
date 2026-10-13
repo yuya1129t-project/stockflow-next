@@ -203,6 +203,7 @@ export function PurchaseOrderForm({
         <OrderLinesEditor
           products={products}
           priceLabel="仕入単価"
+          confirmLabel="発注済"
           idPrefix="purchase-order"
         />
 

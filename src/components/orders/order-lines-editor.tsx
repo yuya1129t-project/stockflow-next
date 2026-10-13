@@ -30,11 +30,14 @@ type LinesForm = { lines: OrderLineFormValues[] };
 export function OrderLinesEditor({
   products,
   priceLabel,
+  confirmLabel,
   idPrefix,
 }: {
   products: LineProductOption[];
   /** 単価の初期値の名前（発注は「仕入単価」、受注は「売価」） */
   priceLabel: string;
+  /** 明細が 1 行以上必要になるステータスの名前（発注は「発注済」、受注は「確定」） */
+  confirmLabel: string;
   /** 入力欄の id の接頭辞（例 "purchase-order"） */
   idPrefix: string;
 }) {
@@ -67,8 +70,8 @@ export function OrderLinesEditor({
       )}
       {fields.length === 0 && (
         <p className="rounded-lg border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
-          明細がありません。「行を追加」で商品を選んでください（下書きは明細なしでも保存できますが、発注済にするには
-          1 行以上必要です）
+          明細がありません。「行を追加」で商品を選んでください（下書きは明細なしでも保存できますが、
+          {confirmLabel}にするには 1 行以上必要です）
         </p>
       )}
       <ol className="space-y-3">
@@ -81,7 +84,7 @@ export function OrderLinesEditor({
           const productField = register(`lines.${index}.productId`, {
             onChange: (event: { target: { value: string } }) => {
               const selected = byId.get(event.target.value);
-              // 単価の初期値は商品の単価（発注は仕入単価）。あとから書き換えられる
+              // 単価の初期値は商品の単価（発注は仕入単価、受注は売価）。あとから書き換えられる
               if (selected) {
                 setValue(`lines.${index}.unitPrice`, String(selected.price), {
                   shouldValidate: true,

@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { requirePermission } from "@/lib/auth/guards";
-import { purchaseOrderPath } from "@/lib/dashboard/paths";
+import { purchaseOrderPath, salesOrderPath } from "@/lib/dashboard/paths";
 import type { MonthOverMonth } from "@/lib/dashboard/period";
 import {
   getDashboardData,
@@ -88,7 +88,7 @@ function ChangeText({ change }: { change: MonthOverMonth }) {
   );
 }
 
-/** 伝票の一覧（hrefOf があれば番号を詳細へのリンクにする。受注は詳細画面ができるまでテキスト） */
+/** 伝票の一覧（hrefOf があれば番号を詳細へのリンクにする） */
 function OrderList({
   items,
   dateLabel,
@@ -285,6 +285,7 @@ export default async function Home() {
                 items={unshipped.overdue}
                 dateLabel="納期"
                 overdueLabel="納期切れ"
+                hrefOf={salesOrderPath}
               />
               {unshipped.overdueCount > unshipped.overdue.length && (
                 <p className="text-xs text-muted-foreground">
