@@ -29,17 +29,17 @@
 
 ## 技術スタック
 
-| 区分           | 採用技術                                           |
-| -------------- | -------------------------------------------------- |
-| フレームワーク | Next.js 16（App Router）／React 19                 |
-| 言語           | TypeScript（strict）                               |
-| UI             | Tailwind CSS 4／shadcn/ui                          |
-| データベース   | PostgreSQL 17（ローカルは Docker Compose）         |
-| ORM            | Prisma 7                                           |
-| テスト         | Vitest                                             |
-| 静的解析・整形 | ESLint（Next.js の flat config）／Prettier         |
-| CI             | GitHub Actions（lint・型チェック・テスト・ビルド） |
-| 実行環境       | Node.js 24 LTS／pnpm                               |
+| 区分           | 採用技術                                                |
+| -------------- | ------------------------------------------------------- |
+| フレームワーク | Next.js 16（App Router）／React 19                      |
+| 言語           | TypeScript（strict）                                    |
+| UI             | Tailwind CSS 4／shadcn/ui                               |
+| データベース   | PostgreSQL 17（ローカルは Docker Compose）              |
+| ORM            | Prisma 7                                                |
+| テスト         | Vitest／Playwright（E2E）                               |
+| 静的解析・整形 | ESLint（Next.js の flat config）／Prettier              |
+| CI             | GitHub Actions（lint・型チェック・テスト・ビルド・E2E） |
+| 実行環境       | Node.js 24 LTS／pnpm                                    |
 
 ## ローカル開発
 
@@ -450,6 +450,7 @@ erDiagram
 pnpm test              # 単体テスト＋結合テスト（Vitest）
 pnpm test:unit         # 単体テストのみ（DB 不要）
 pnpm test:integration  # 結合テストのみ（実 DB = DATABASE_URL_TEST）
+pnpm test:e2e          # E2E テスト（Playwright。下の「E2E テスト」）
 pnpm lint              # ESLint
 pnpm typecheck         # 型チェック
 pnpm build             # 本番ビルド
@@ -457,6 +458,23 @@ pnpm format            # Prettier で整形
 ```
 
 結合テスト（`tests/integration/`）はテスト用 DB（`stockflow_test`）を使います。先に `docker compose up -d` と `pnpm db:test:reset` を実行してください。DB に接続できないときは、その旨と対処を示すエラーで失敗します。CI では PostgreSQL 17 のサービスを起動し、`pnpm db:test:reset` のあとに全テストを実行しています。
+
+### E2E テスト（Playwright）
+
+```bash
+docker compose up -d                       # PostgreSQL を起動
+pnpm exec playwright install chromium      # 初回だけ（Playwright 用の chromium をダウンロード）
+pnpm test:e2e                              # ビルド → 起動 → テスト → 停止まで行う
+pnpm exec playwright show-report           # 結果の HTML レポートを開く
+```
+
+- テストは `e2e/`、設定は `playwright.config.ts`。ブラウザは chromium のみです
+- アプリは**本番モード**（`next build` → `next start`）で `http://127.0.0.1:3113` に起動し、DB は E2E 用 DB（`DATABASE_URL_TEST`）に向けます。開発サーバー（3000）とは別のポートなので並行して動かせます。起動済みのサーバーは使いません（開発用 DB を向いたサーバーでテストしないため）。3113 番が使用中なら起動に失敗して止まります
+- テストの前に E2E 用 DB をマイグレーション＋シードで初期化します（`e2e/global-setup.ts` が `pnpm db:test:reset` を実行。**テスト用 DB のデータは消えます**）。結合テストと同じ DB なので、同時には実行しないでください
+- 本番モードではログインの試行回数制限（60 秒に 5 回）が効くため、ログインはロールごとに 1 回だけ行い（`e2e/auth.setup.ts` で admin／staff／viewer の状態を `e2e/.auth/` に保存）、各テストはそれを使い回します。ほかにログインを試すのはパスワード誤りの 1 回だけです。ログインの前に E2E 用 DB の試行回数のカウンター（`rate_limit`）を空にし（`e2e/clear-rate-limit.ts`。テスト用 DB であることを確かめてから実行）、ログインを試すテストは再試行しません。ログアウトはセッションを消すので、ほかのテストがすべて終わってから実行します（`logout` プロジェクト）
+- テストは並列に実行します。在庫を変えるテストは自分で商品を作り、その商品だけを操作します（シードの在庫に依存しない）
+- 取引先の郵便番号検索は外部 API に依存しないよう、画面から呼ぶ `/api/partners/address-lookup` の応答を `page.route` でモックしています（外部 API との連携そのものは単体テストで確認）
+- 失敗したテストのトレース・スクリーンショットは `test-results/` に残ります（`pnpm exec playwright show-trace <trace.zip>`）。CI では失敗時に `playwright-report/` と `test-results/` を artifact として保存します
 
 ## デモ
 

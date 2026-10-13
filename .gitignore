@@ -35,5 +35,12 @@ next-env.d.ts
 .vercel
 .pnpm-debug.log*
 
+# E2E（Playwright）の生成物・ログイン状態
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/e2e/.auth/
+
 # Prisma Client の生成物（pnpm install 時の postinstall / pnpm db:generate で作る）
 /src/generated/prisma
