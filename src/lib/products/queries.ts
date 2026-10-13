@@ -50,9 +50,17 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
-type FilterParams = Pick<ProductListParams, "q" | "category" | "status">;
+type FilterParams = Pick<ProductListParams, "q" | "category" | "status"> & {
+  /** 発注点割れ（有効で 現在庫 < 発注点）の商品だけにする（在庫一覧 /stock の絞り込み） */
+  lowStock?: boolean;
+};
 
-function whereClause({ q, category, status }: FilterParams): Prisma.Sql {
+function whereClause({
+  q,
+  category,
+  status,
+  lowStock,
+}: FilterParams): Prisma.Sql {
   const conditions: Prisma.Sql[] = [];
   if (q) {
     const pattern = `%${escapeLike(q)}%`;
@@ -63,6 +71,11 @@ function whereClause({ q, category, status }: FilterParams): Prisma.Sql {
   if (category) conditions.push(Prisma.sql`p."category" = ${category}`);
   if (status === "active") conditions.push(Prisma.sql`p."isActive" = TRUE`);
   if (status === "inactive") conditions.push(Prisma.sql`p."isActive" = FALSE`);
+  if (lowStock) {
+    conditions.push(
+      Prisma.sql`p."isActive" = TRUE AND COALESCE(s."stock", 0) < p."reorderPoint"`,
+    );
+  }
   return conditions.length > 0
     ? Prisma.sql`WHERE ${Prisma.join(conditions, " AND ")}`
     : Prisma.empty;
@@ -79,26 +92,32 @@ function orderClause({
     : Prisma.sql`ORDER BY ${SORT_COLUMNS[sort]} ${direction}, p."code" ASC`;
 }
 
-/** 商品と現在庫を取る SELECT（WHERE・ORDER BY・LIMIT は呼び出し側で付ける） */
-const SELECT_WITH_STOCK = Prisma.sql`
-  SELECT p."id", p."code", p."name", p."category", p."unit",
-         p."salesPrice", p."purchasePrice", p."reorderPoint", p."isActive",
-         COALESCE(s."stock", 0)::int AS "stock"
-  FROM "product" p
+/** 入出庫を商品ごとに集計して結合する（別名 s."stock"） */
+const JOIN_STOCK = Prisma.sql`
   LEFT JOIN (
     SELECT "productId", SUM("quantity") AS "stock"
     FROM "stock_movement"
     GROUP BY "productId"
   ) s ON s."productId" = p."id"`;
 
-/** 一覧（検索・並べ替え・ページ送り） */
+/** 商品と現在庫を取る SELECT（WHERE・ORDER BY・LIMIT は呼び出し側で付ける） */
+const SELECT_WITH_STOCK = Prisma.sql`
+  SELECT p."id", p."code", p."name", p."category", p."unit",
+         p."salesPrice", p."purchasePrice", p."reorderPoint", p."isActive",
+         COALESCE(s."stock", 0)::int AS "stock"
+  FROM "product" p
+  ${JOIN_STOCK}`;
+
+/** 一覧（検索・並べ替え・ページ送り）。在庫一覧（/stock）も lowStock を付けてこれを使う */
 export async function listProducts(
   db: PrismaClient,
-  params: ProductListParams,
+  params: ProductListParams & { lowStock?: boolean },
 ): Promise<ProductListResult> {
   const where = whereClause(params);
+  // 件数は、発注点割れで絞り込むときだけ現在庫の集計を結合する
   const [{ count }] = await db.$queryRaw<{ count: number }[]>`
-    SELECT COUNT(*)::int AS "count" FROM "product" p ${where}`;
+    SELECT COUNT(*)::int AS "count" FROM "product" p
+    ${params.lowStock ? JOIN_STOCK : Prisma.empty} ${where}`;
   const perPage = PRODUCTS_PER_PAGE;
   const totalPages = Math.max(1, Math.ceil(count / perPage));
   const page = Math.min(params.page, totalPages);

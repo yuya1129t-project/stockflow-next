@@ -53,7 +53,7 @@ function requiredText(field: ProductField, max: number) {
 }
 
 /** 全角数字・全角カンマを半角にし、桁区切りのカンマを取り除く（Excel で編集した CSV・日本語入力を想定） */
-function normalizeDigits(value: string): string {
+export function normalizeDigits(value: string): string {
   const halfWidth = value
     .trim()
     .replace(/[０-９，]/g, (c) =>

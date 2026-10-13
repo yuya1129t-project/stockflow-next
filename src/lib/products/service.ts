@@ -243,8 +243,16 @@ export async function importProducts(
   try {
     const summary = await db.$transaction(
       async (tx) => {
+        const codes = rows.map((r) => r.data.code);
+        // 更新し得る既存の商品の行を、先に id の順でまとめてロックする。在庫の記録（src/lib/stock/movements.ts）と
+        // ロックの順番をそろえ、CSV の並びの順に UPDATE することでのデッドロックを避ける
+        await tx.$queryRaw`
+          SELECT "id" FROM "product"
+          WHERE "code" IN (${Prisma.join(codes)})
+          ORDER BY "id"
+          FOR NO KEY UPDATE`;
         const existing = await tx.product.findMany({
-          where: { code: { in: rows.map((r) => r.data.code) } },
+          where: { code: { in: codes } },
         });
         const byCode = new Map(existing.map((p) => [p.code, p]));
 
