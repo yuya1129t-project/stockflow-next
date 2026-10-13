@@ -11,6 +11,7 @@ import { redirect } from "next/navigation";
 
 import { checkActionPermission } from "@/lib/auth/guards";
 import { getPrisma } from "@/lib/db";
+import { notifyReorderPointAfterResponse } from "@/lib/notifications/reorder-point";
 import { isValidDbId } from "@/lib/orders/schema";
 import {
   changeSalesOrderStatus,
@@ -64,7 +65,7 @@ export async function updateSalesOrderAction(
 /**
  * ステータス変更。expectedUpdatedAt は詳細画面に表示した時点の updatedAt（変わっていれば変更しない）。
  * 出荷では在庫が変わるので、在庫・商品の画面も最新にする。在庫が足りなければ shortages（不足する商品と数量）を返す。
- * 出荷の結果の fellBelowReorderPoint（発注点割れに変わった商品）は、#12 でここ（トランザクション確定後）から通知する
+ * 出荷で発注点割れに変わった商品（fellBelowReorderPoint）は、トランザクション確定後のここから、応答を返した後に通知する（#12）
  */
 export async function changeSalesOrderStatusAction(
   id: number,
@@ -86,6 +87,15 @@ export async function changeSalesOrderStatusAction(
   if (result.data.to === "shipped") {
     revalidatePath("/stock", "layout");
     revalidatePath("/products", "layout");
+    notifyReorderPointAfterResponse({
+      crossings: result.data.fellBelowReorderPoint,
+      trigger: {
+        kind: "sales_order_shipped",
+        salesOrderId: id,
+        number: result.data.number,
+      },
+      userId: check.user.id,
+    });
   }
   return { ok: true };
 }
