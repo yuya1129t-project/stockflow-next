@@ -59,9 +59,11 @@ async function cleanUp() {
 async function createSalesOrder(
   status: "draft" | "confirmed" | "shipped" | "cancelled",
   orderDate: string,
-  total: number,
+  subtotal: number,
   dueDate: string | null = null,
 ) {
+  // 税 10%（受注額は税込の total で集計するので、subtotal と total が違う値になるようにする）
+  const tax = Math.floor(subtotal / 10);
   return prisma.salesOrder.create({
     data: {
       number: nextCode(),
@@ -69,9 +71,9 @@ async function createSalesOrder(
       status,
       orderDate: day(orderDate),
       dueDate: dueDate ? day(dueDate) : null,
-      subtotal: total,
-      tax: 0,
-      total,
+      subtotal,
+      tax,
+      total: subtotal + tax,
     },
   });
 }
@@ -159,7 +161,8 @@ afterAll(async () => {
 });
 
 describe("今月の受注額・前月比・月別", () => {
-  it("JST の暦月・受注日基準で confirmed と shipped だけを合計する", async () => {
+  // 金額は税抜（subtotal）。集計は税込（total = subtotal + 10%）
+  beforeAll(async () => {
     // 今月（2000-03）: 月初と月末
     await createSalesOrder("shipped", "2000-03-01", 2000);
     await createSalesOrder("confirmed", "2000-03-31", 400);
@@ -174,42 +177,49 @@ describe("今月の受注額・前月比・月別", () => {
     // 6 か月の最初の月（1999-10）の月初と、その前日（範囲外）
     await createSalesOrder("shipped", "1999-10-01", 300);
     await createSalesOrder("confirmed", "1999-09-30", 900);
+  });
 
+  it("JST の暦月・受注日基準で confirmed と shipped の税込 total を合計する", async () => {
     const data = await getDashboardData(prisma, { now: NOW });
     expect(data.today).toBe("2000-03-01");
+    // 2200 + 440（税抜の合計 2400 ではない）
     expect(data.sales.current).toMatchObject({
       key: "2000-03",
-      total: 2400,
+      total: 2640,
     });
     expect(data.sales.previous).toMatchObject({
       key: "2000-02",
-      total: 1000,
+      total: 1100,
     });
-    expect(data.sales.change).toEqual({ diff: 1400, rate: 140 });
+    expect(data.sales.change.diff).toBe(1540);
+    expect(data.sales.change.rate).toBeCloseTo(140);
     expect(data.sales.trend.map((m) => [m.key, m.total])).toEqual([
-      ["1999-10", 300],
+      ["1999-10", 330],
       ["1999-11", 0],
       ["1999-12", 0],
       ["2000-01", 0],
-      ["2000-02", 1000],
-      ["2000-03", 2400],
+      ["2000-02", 1100],
+      ["2000-03", 2640],
     ]);
   });
 
   it("前月が 0 円なら増減率は null", async () => {
-    // 1999-11 を今月とすると前月（1999-10）は 300、1999-12 を今月とすると前月（1999-11）は 0
+    // 1999-12 を今月とすると、今月・前月（1999-11）とも受注なし
     const data = await getDashboardData(prisma, {
       now: new Date("1999-12-15T12:00:00+09:00"),
     });
     expect(data.sales.current.total).toBe(0);
     expect(data.sales.previous.total).toBe(0);
     expect(data.sales.change).toEqual({ diff: 0, rate: null });
+  });
 
-    const nov = await getDashboardData(prisma, {
+  it("今月が 0 円・前月に受注があれば -100%", async () => {
+    // 1999-11 を今月とすると、前月（1999-10）は 330
+    const data = await getDashboardData(prisma, {
       now: new Date("1999-11-01T00:00:00+09:00"),
     });
-    expect(nov.sales.current.key).toBe("1999-11");
-    expect(nov.sales.change).toEqual({ diff: -300, rate: -100 });
+    expect(data.sales.current).toMatchObject({ key: "1999-11", total: 0 });
+    expect(data.sales.change).toEqual({ diff: -330, rate: -100 });
   });
 });
 
@@ -345,7 +355,7 @@ describe("未出荷の受注・入荷待ちの発注・発注点割れ", () => {
   });
 
   it("受注額の集計には未出荷の確認用データ（2000-02 の受注日）も confirmed / shipped だけが入る", () => {
-    // confirmed 4 件 × 100 ＋ shipped 1 件 × 100 が前月に加わる（draft・cancelled は入らない）
-    expect(after.sales.previous.total - before.sales.previous.total).toBe(500);
+    // confirmed 4 件 × 110 ＋ shipped 1 件 × 110（税込）が前月に加わる（draft・cancelled は入らない）
+    expect(after.sales.previous.total - before.sales.previous.total).toBe(550);
   });
 });

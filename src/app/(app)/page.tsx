@@ -57,21 +57,33 @@ function Card({
   );
 }
 
+/** 増減率（小数 1 桁）。丸めると 0 になる値は "±0%"（"+0.0%"・"-0.0%" と出さない） */
+function formatRate(rate: number): string {
+  const rounded = Number(rate.toFixed(1));
+  if (rounded === 0) return "±0%";
+  return `${rounded > 0 ? "+" : ""}${rounded.toFixed(1)}%`;
+}
+
 function ChangeText({ change }: { change: MonthOverMonth }) {
   const sign = change.diff > 0 ? "+" : "";
   const arrow = change.diff > 0 ? "↑" : change.diff < 0 ? "↓" : "→";
   return (
-    <p className="text-sm text-muted-foreground">
-      前月比{" "}
-      <span className="font-medium text-foreground tabular-nums">
-        <span aria-hidden="true">{arrow} </span>
-        {sign}
-        {formatNumber(change.diff)} 円
-        {change.rate === null
-          ? "（前月の受注なし）"
-          : `（${sign}${change.rate.toFixed(1)}%）`}
-      </span>
-    </p>
+    <div className="space-y-0.5">
+      <p className="text-sm text-muted-foreground">
+        前月比{" "}
+        <span className="font-medium text-foreground tabular-nums">
+          <span aria-hidden="true">{arrow} </span>
+          {sign}
+          {formatNumber(change.diff)} 円
+          {change.rate === null
+            ? "（前月の受注なし）"
+            : `（${formatRate(change.rate)}）`}
+        </span>
+      </p>
+      <p className="text-xs text-muted-foreground">
+        ※今月は本日までの合計、前月は月全体の合計との比較です
+      </p>
+    </div>
   );
 }
 
@@ -256,11 +268,22 @@ export default async function Home() {
               納期を過ぎた受注はありません
             </p>
           ) : (
-            <OrderList
-              items={unshipped.overdue}
-              dateLabel="納期"
-              overdueLabel="納期切れ"
-            />
+            <>
+              <OrderList
+                items={unshipped.overdue}
+                dateLabel="納期"
+                overdueLabel="納期切れ"
+              />
+              {unshipped.overdueCount > unshipped.overdue.length && (
+                <p className="text-xs text-muted-foreground">
+                  他{" "}
+                  {formatNumber(
+                    unshipped.overdueCount - unshipped.overdue.length,
+                  )}{" "}
+                  件
+                </p>
+              )}
+            </>
           )}
         </Card>
 

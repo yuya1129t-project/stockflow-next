@@ -38,7 +38,6 @@ export interface DashboardOrderItem {
   date: string | null;
   /** 今日（JST）より前の日付なら true */
   overdue: boolean;
-  total: number;
 }
 
 export interface DashboardLowStockItem {
@@ -122,11 +121,10 @@ async function unshippedOrders(db: PrismaClient, today: string, limit: number) {
         number: string;
         partnerName: string;
         date: string;
-        total: number;
       }[]
     >`
       SELECT o."id", o."number", c."name" AS "partnerName",
-             to_char(o."dueDate", 'YYYY-MM-DD') AS "date", o."total"
+             to_char(o."dueDate", 'YYYY-MM-DD') AS "date"
       FROM "sales_order" o
       JOIN "partner" c ON c."id" = o."customerId"
       WHERE o."status" = 'confirmed' AND o."dueDate" < ${today}::date
@@ -190,7 +188,6 @@ async function awaitingPurchaseOrders(
         id: true,
         number: true,
         expectedDate: true,
-        total: true,
         supplier: { select: { name: true } },
       },
     }),
@@ -206,7 +203,6 @@ async function awaitingPurchaseOrders(
         partnerName: r.supplier.name,
         date,
         overdue: date !== null && date < today,
-        total: r.total,
       };
     }),
   };
