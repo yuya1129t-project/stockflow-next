@@ -15,6 +15,7 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
+    "test:e2e": "playwright test",
     "format": "prettier --write .",
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",
@@ -41,6 +42,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.0",
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^24.19.2",
     "@types/react": "^19",
