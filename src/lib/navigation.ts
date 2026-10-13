@@ -24,12 +24,12 @@ export const NAV_ITEMS: NavItem[] = [
     label: "ユーザー管理",
     href: "/users",
     permission: "user:manage",
-    ready: false,
+    ready: true,
   },
   {
     label: "操作履歴",
     href: "/audit-logs",
     permission: "audit:view",
-    ready: false,
+    ready: true,
   },
 ];
