@@ -10,7 +10,10 @@ export default defineConfig({
     seed: "tsx prisma/seed.ts",
   },
   datasource: {
-    // env() は未設定だと例外になり、DB 不要の `prisma generate`（postinstall・CI）まで失敗するため process.env を使う
-    url: process.env.DATABASE_URL,
+    // env() は未設定だと例外になり、DB 不要の `prisma generate`（postinstall・CI）まで失敗するため process.env を使う。
+    // CLI（migrate など）は DIRECT_URL があればそちらを使う（本番の Neon はアプリ用の DATABASE_URL が
+    // プール接続（PgBouncer）なので、マイグレーションは直接接続の URL で行う。docs/deploy.md）。
+    // ローカル・CI は DIRECT_URL を空にして DATABASE_URL だけで動かす（空文字も未設定と同じ扱いにするため ||）
+    url: process.env.DIRECT_URL || process.env.DATABASE_URL,
   },
 });

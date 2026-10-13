@@ -4,6 +4,33 @@
 
 [![CI](https://github.com/yuya1129t-project/stockflow-next/actions/workflows/ci.yml/badge.svg)](https://github.com/yuya1129t-project/stockflow-next/actions/workflows/ci.yml)
 
+## デモ
+
+- **URL:** （公開後に記載）
+- ログイン画面にもアカウントを表示しています（クリックすると入力欄に入ります）。パスワードはデモ専用の値です
+
+| ロール | メールアドレス     | パスワード       | できること                                                   |
+| ------ | ------------------ | ---------------- | ------------------------------------------------------------ |
+| admin  | admin@example.com  | `demo-pass-1234` | すべて（ユーザー管理・操作履歴の閲覧・商品等の無効化を含む） |
+| staff  | staff@example.com  | `demo-pass-1234` | 閲覧、商品・取引先・受注・発注の登録・編集、棚卸調整、CSV    |
+| viewer | viewer@example.com | `demo-pass-1234` | 閲覧と CSV 出力のみ                                          |
+
+- **データは毎日リセットされます**（日本時間 3 時台。登録・変更したデータは消え、ログイン中の人もログアウトされます）。自由に操作してかまいません
+- 無料枠で動かしているため、しばらくアクセスがないと最初の表示に数秒かかることがあります
+- REST API の仕様は公開 URL の `/api-docs`（ログイン不要）で見られます
+
+## スクリーンショット
+
+| ダッシュボード                                       | 受注詳細                                        |
+| ---------------------------------------------------- | ----------------------------------------------- |
+| ![ダッシュボード](docs/images/dashboard.png)         | ![受注詳細](docs/images/sales-order-detail.png) |
+| **在庫（発注点割れの強調）**                         | **商品一覧**                                    |
+| ![在庫](docs/images/stock.png)                       | ![商品一覧](docs/images/products.png)           |
+| **REST API のドキュメント（`/api-docs`）**           |                                                 |
+| ![REST API のドキュメント](docs/images/api-docs.png) |                                                 |
+
+画像はシードデータで撮ったものです（`pnpm screenshots` で撮り直せます。下の「スクリーンショットの撮り直し」）。
+
 ## このリポジトリについて
 
 - 自社開発（個人の公開成果物）です。業務仕様は [docs/spec.md](docs/spec.md) にまとめています
@@ -11,8 +38,6 @@
 - **データはすべて架空です**（実在の会社・人物・取引とは関係ありません）
 
 ## 主な機能
-
-現時点では初期構築（土台）、DB スキーマ・シードデータ、認証とロール権限、商品マスタ、取引先マスタ、在庫、ダッシュボード、発注、受注、発注点割れの通知、ユーザー管理・操作履歴・API トークン、外部向け REST API までです。「予定」の機能は今後の Issue で実装します
 
 | 機能                   | 内容                                                                   | 状態   |
 | ---------------------- | ---------------------------------------------------------------------- | ------ |
@@ -26,6 +51,7 @@
 | ユーザー管理・操作履歴 | ユーザー・ロール管理、API トークン、操作履歴の閲覧                     | 実装済 |
 | 外部向け REST API      | `/api/v1`（Bearer 認証）、OpenAPI 3.1                                  | 実装済 |
 | 通知                   | 発注点割れを Webhook で通知                                            | 実装済 |
+| デモ環境               | Vercel＋Neon で公開、デモデータを毎日リセット（Vercel Cron）           | 実装済 |
 
 ## 技術スタック
 
@@ -40,6 +66,47 @@
 | 静的解析・整形 | ESLint（Next.js の flat config）／Prettier              |
 | CI             | GitHub Actions（lint・型チェック・テスト・ビルド・E2E） |
 | 実行環境       | Node.js 24 LTS／pnpm                                    |
+| 公開環境       | Vercel（Hobby）＋ Neon（PostgreSQL 17、無料枠）         |
+
+## アーキテクチャ
+
+```mermaid
+flowchart LR
+  browser["ブラウザ<br/>（画面・Cookie のセッション）"]
+  client["外部クライアント<br/>（REST API・Bearer トークン）"]
+  cron["Vercel Cron<br/>（1 日 1 回）"]
+
+  subgraph vercel["Vercel（Functions: sin1 シンガポール）"]
+    next["Next.js 16（App Router）<br/>画面・Server Actions・Route Handlers<br/>Better Auth・Prisma 7"]
+  end
+
+  neon[("Neon<br/>PostgreSQL 17<br/>（AWS シンガポール）")]
+  zipcloud["zipcloud<br/>（郵便番号→住所）"]
+  slack["Slack Incoming Webhook<br/>（発注点割れの通知）"]
+
+  browser -->|HTTPS| next
+  client -->|"HTTPS /api/v1"| next
+  cron -->|"GET /api/cron/reset-demo<br/>Bearer CRON_SECRET"| next
+  next -->|"adapter-pg・プール接続<br/>（マイグレーションは直接接続）"| neon
+  next -->|"サーバーから呼ぶ"| zipcloud
+  next -.->|"任意（デモは未設定）"| slack
+```
+
+- 画面・API・日次リセットは 1 つの Next.js アプリです。DB に触れるのはサーバー側だけで、ブラウザから外部 API（zipcloud）を直接呼ぶこともありません
+- アプリと DB は同じシンガポールのリージョンに置き、往復の遅延を小さくしています
+- 公開の手順は [docs/deploy.md](docs/deploy.md)（下の「デモ環境の公開」）
+
+## 技術選定の理由
+
+| 採用技術                   | 理由                                                                                                                                                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Next.js（App Router）      | 画面・フォームの処理（Server Actions）・REST API・日次リセット（Route Handlers）を 1 つのアプリにまとめられ、権限の検査を同じサーバー側の関数で共有できる。Vercel にそのまま載せられる                                   |
+| TypeScript（strict）＋ Zod | 入力の検証を Zod のスキーマ 1 つにまとめ、画面とサーバーで共有する。REST API の OpenAPI の定義も同じスキーマから作り、実装と仕様書が食い違わないようにする                                                               |
+| PostgreSQL ＋ Prisma 7     | 在庫・伝票の整合性に、トランザクション・行ロック・CHECK 制約が必要なため。Prisma で型の付いたクエリとマイグレーションを使い、ドライバーアダプター（node-postgres）でローカルの Docker と Neon の両方に同じ方法で接続する |
+| Better Auth                | DB のセッションなので、ユーザーの無効化を次のリクエストから反映できる。Prisma のスキーマにそのまま載り、ログインの試行回数のカウンターも DB に置ける（複数のインスタンスで共有）                                         |
+| Tailwind CSS ＋ shadcn/ui  | 部品をコードとしてリポジトリに持ち、業務画面の表・フォームを必要な分だけ調整できる                                                                                                                                       |
+| Vitest ＋ Playwright       | 単体テスト（DB なし）、実際の PostgreSQL での結合テスト、本番ビルドを動かす E2E テストを分けて、速さと確かさを両立する                                                                                                   |
+| Vercel ＋ Neon             | どちらも無料枠でデモを常時公開でき、Next.js・Cron・PostgreSQL をそのまま使える。Neon の接続プールで、関数が増えても DB の接続数があふれない                                                                              |
 
 ## ローカル開発
 
@@ -233,15 +300,9 @@ erDiagram
 
 ### デモ用アカウント
 
-ログイン画面にも表示しています（クリックすると入力欄に入ります）。値は `prisma/seed-data.ts` の `DEMO_USERS`／`DEMO_PASSWORD` の 1 か所で定義し、ログイン画面はそこから読み込んでいます。
+アカウントの一覧は冒頭の「デモ」の節です。値は `prisma/seed-data.ts` の `DEMO_USERS`／`DEMO_PASSWORD` の 1 か所で定義し、ログイン画面はそこから読み込んでいます。
 
 この 3 つのアカウントは**保護されていて、ロール変更・無効化・パスワード再設定はできません**（公開デモでは admin のパスワードも公開するため、閲覧者が他の閲覧者のデモを壊せないようにしています。詳しくは「ユーザー管理」）。ユーザー管理を試すときは、新しいユーザーを登録してください。
-
-| ロール | メールアドレス     | パスワード       | できること                                                   |
-| ------ | ------------------ | ---------------- | ------------------------------------------------------------ |
-| admin  | admin@example.com  | `demo-pass-1234` | すべて（ユーザー管理・操作履歴の閲覧・商品等の無効化を含む） |
-| staff  | staff@example.com  | `demo-pass-1234` | 閲覧、商品・取引先・受注・発注の登録・編集、棚卸調整、CSV    |
-| viewer | viewer@example.com | `demo-pass-1234` | 閲覧と CSV 出力のみ                                          |
 
 ### 設計
 
@@ -457,6 +518,12 @@ pnpm build             # 本番ビルド
 pnpm format            # Prettier で整形
 ```
 
+| 種類       | 件数（2026-10-13 時点）                        | 場所                                                           | 内容                                                                                      |
+| ---------- | ---------------------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 単体テスト | 567 件（50 ファイル）                          | `src/**/*.test.ts(x)`・`prisma/*.test.ts`・`scripts/*.test.ts` | 税計算・権限表・入力検証・CSV・通知の本文・Route Handler（DB はモック）など。DB 不要      |
+| 結合テスト | 316 件（12 ファイル）                          | `tests/integration/`                                           | 実際の PostgreSQL（テスト用 DB）で service・Server Action・REST API・シード・日次リセット |
+| E2E テスト | 31 件（6 ファイル。ログインの準備 3 件を含む） | `e2e/`                                                         | 本番ビルドを起動し、chromium でログイン・権限・受注→出荷などを画面から操作                |
+
 結合テスト（`tests/integration/`）はテスト用 DB（`stockflow_test`）を使います。先に `docker compose up -d` と `pnpm db:test:reset` を実行してください。DB に接続できないときは、その旨と対処を示すエラーで失敗します。CI では PostgreSQL 17 のサービスを起動し、`pnpm db:test:reset` のあとに全テストを実行しています。
 
 ### E2E テスト（Playwright）
@@ -476,9 +543,29 @@ pnpm exec playwright show-report           # 結果の HTML レポートを開�
 - 取引先の郵便番号検索は外部 API に依存しないよう、画面から呼ぶ `/api/partners/address-lookup` の応答を `page.route` でモックしています（外部 API との連携そのものは単体テストで確認）
 - 失敗したテストのトレース・スクリーンショットは `test-results/` に残ります（`pnpm exec playwright show-trace <trace.zip>`）。CI では失敗時に `playwright-report/` と `test-results/` を artifact として保存します
 
-## デモ
+### スクリーンショットの撮り直し
 
-（#14 で追加予定）
+README の画像（`docs/images/*.png`）は `scripts/screenshots.ts`（Playwright）で撮ります。シードを投入した DB に向けてアプリを起動しておき、admin で 1 回ログインして、デスクトップ幅（1280×800）でダッシュボード・受注詳細・在庫・商品一覧・`/api-docs` を撮ります。
+
+```bash
+pnpm db:reset && pnpm dev                                  # 別のターミナルで起動しておく
+pnpm screenshots                                           # http://localhost:3000 を撮る
+SCREENSHOT_BASE_URL=http://127.0.0.1:3100 pnpm screenshots # 別のポートで起動したとき
+```
+
+## デモ環境の公開
+
+Vercel（Hobby）＋ Neon（無料枠）に公開します。手順（アカウント作成・環境変数・初回のデータ投入・動作確認・無料枠の制限）は [docs/deploy.md](docs/deploy.md) にまとめています。
+
+- **ビルド:** Vercel は `vercel.json` の設定で、pnpm 12（`npx -y pnpm@12.11.2`。Vercel の標準の対応は pnpm 10 まで）でインストールし、`vercel-build` を実行します。本番（`VERCEL_ENV=production`）でだけ `prisma migrate deploy` を直接接続の `DIRECT_URL` で実行してから `next build` します（`scripts/vercel-migrate.ts`）。PR のプレビューのビルドではマイグレーションしません。ローカルの `pnpm build` は DB なしで通ります
+- **DB の接続:** アプリは `DATABASE_URL`（Neon の接続プール経由の URL）、Prisma CLI（マイグレーション）は `DIRECT_URL` があればそちらを使います（`prisma.config.ts`）。ローカル・CI は `DIRECT_URL` を空にして `DATABASE_URL` だけで動きます。`DIRECT_URL` を設定した場合も、`pnpm db:reset`・`pnpm db:test:reset` は接続先を確認してから実行します
+- **デモデータの日次リセット:** Vercel Cron（`vercel.json`。毎日 18:00 UTC ＝ 日本時間 3 時台。Hobby では実行時刻はその 1 時間のどこか）が `GET /api/cron/reset-demo` を呼び、`pnpm db:seed` と同じ処理（`prisma/reset-demo-data.ts`）でアプリのテーブルを空にしてシードを投入し直します
+  - 認証は `Authorization: Bearer <CRON_SECRET>`（Vercel Cron の仕様）。定数時間で比較し、違う・`CRON_SECRET` 未設定なら 401
+  - ローカル以外の DB は `STOCKFLOW_ALLOW_DESTRUCTIVE_SEED=1` がないとシードと同じガード（`scripts/db-guard.ts`）で中止します（500。データには触れない）
+  - セッション・API トークン・ログインの試行回数のカウンターも消えます（全員がログアウトされる）。公開デモでは前日の閲覧者のログイン状態・トークンを残さない方がよいので、そのままにしています
+  - 所要時間はローカルの PostgreSQL の実測で 133〜249ms です。関数の上限は `maxDuration = 60` 秒にしています
+- **リージョン:** Functions は `sin1`（シンガポール。`vercel.json` の `regions`）、Neon は AWS Asia Pacific (Singapore)
+- **本番の設定:** `BETTER_AUTH_URL` を公開 URL（`https://…`）にすると、セッションの Cookie は `__Secure-` 付きの Secure になります。ログインの試行回数制限の IP は Vercel が上書きする `x-forwarded-for` から取ります。`/api-docs` の CSP は通信先が同じオリジンだけなので、公開 URL でもそのまま動きます。発注点割れの通知（`STOCKFLOW_SLACK_WEBHOOK_URL`）は設定しません
 
 ## REST API
 
@@ -535,10 +622,25 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 - `/api-docs` の Swagger UI は依存に入れず、jsDelivr から版を固定し SRI（`integrity`）付きで読み込みます。この画面の応答にだけ CSP（スクリプトはその版の CDN と初期化スクリプトのハッシュだけ、通信は同じオリジンだけ）を付けています
 - 残る制限: API 独自の回数制限はありません（トークンは admin が発行したものだけ）。CORS は許可していないので、ほかのオリジンのブラウザからは呼べません（サーバー間の利用を想定）
 
-## 開発の進め方
+## 開発の進め方（Claude Code）
 
-1. GitHub Issue でタスクを切る（1 Issue = 1 ブランチ = 1 PR）
-2. `feat/<issue番号>-<短い名前>` ブランチで実装
-3. PR を作成し、レビュー 2 本の指摘に対応
-4. CI（lint・型チェック・テスト・ビルド）が緑であることを確認
-5. main にマージ
+実装は Claude Code（AI のコーディングエージェント）が行い、要件・仕様の決定、レビューの指摘への判断、マージは本人が行っています。1 つの Issue を次の流れで進めます。
+
+```mermaid
+flowchart LR
+  issue["GitHub Issue<br/>（やること・仕様の節）"] --> branch["ブランチ<br/>feat/番号-名前"]
+  branch --> impl["Claude Code が実装<br/>テストも同時に書く"]
+  impl --> pr["PR<br/>概要・設計判断・確認したこと"]
+  pr --> review["独立したレビュー 2 本<br/>原則 Claude・Codex"]
+  review -->|指摘に対応| impl
+  review --> ci["CI<br/>lint・型・テスト・ビルド・E2E"]
+  ci --> merge["main にマージ"]
+```
+
+1. **Issue:** タスクを GitHub Issue に切る（1 Issue = 1 ブランチ = 1 PR）。仕様は [docs/spec.md](docs/spec.md) の該当の節を正とします
+2. **ブランチ:** `feat/<issue番号>-<短い名前>`。main へ直接 push しません
+3. **実装:** Claude Code が Issue と仕様を読んで実装し、単体・結合（・必要なら E2E）テストを書いて、手元で `pnpm lint`・`pnpm typecheck`・`pnpm test`・`pnpm build` を通します
+4. **PR:** 概要・変更内容・設計判断・確認したことを書いて作成します
+5. **レビュー 2 本:** PR ごとに独立したレビューを 2 本行います（原則 Claude と Codex（OpenAI）。Codex が利用上限のときは Claude による独立した 2 本目、小さな修正ではメインループ（作業を指揮する Claude）によるコードの直接確認で代えます）。指摘ごとに直すか・理由を書いて見送るかを判断します
+6. **CI:** GitHub Actions（lint・型チェック・単体＋結合テスト・ビルド、E2E）がすべて緑であることを確認します
+7. **マージ:** main にマージし、Issue を閉じます
