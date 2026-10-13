@@ -50,6 +50,12 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
+/**
+ * 発注点割れ（有効な商品で 現在庫 < 発注点。src/lib/stock/rules.ts の isBelowReorderPoint と同じ定義）。
+ * 商品の別名 p と JOIN_STOCK の結合が前提
+ */
+export const LOW_STOCK_CONDITION = Prisma.sql`p."isActive" = TRUE AND COALESCE(s."stock", 0) < p."reorderPoint"`;
+
 type FilterParams = Pick<ProductListParams, "q" | "category" | "status"> & {
   /** 発注点割れ（有効で 現在庫 < 発注点）の商品だけにする（在庫一覧 /stock の絞り込み） */
   lowStock?: boolean;
@@ -71,11 +77,7 @@ function whereClause({
   if (category) conditions.push(Prisma.sql`p."category" = ${category}`);
   if (status === "active") conditions.push(Prisma.sql`p."isActive" = TRUE`);
   if (status === "inactive") conditions.push(Prisma.sql`p."isActive" = FALSE`);
-  if (lowStock) {
-    conditions.push(
-      Prisma.sql`p."isActive" = TRUE AND COALESCE(s."stock", 0) < p."reorderPoint"`,
-    );
-  }
+  if (lowStock) conditions.push(LOW_STOCK_CONDITION);
   return conditions.length > 0
     ? Prisma.sql`WHERE ${Prisma.join(conditions, " AND ")}`
     : Prisma.empty;
@@ -92,8 +94,8 @@ function orderClause({
     : Prisma.sql`ORDER BY ${SORT_COLUMNS[sort]} ${direction}, p."code" ASC`;
 }
 
-/** 入出庫を商品ごとに集計して結合する（別名 s."stock"） */
-const JOIN_STOCK = Prisma.sql`
+/** 入出庫を商品ごとに集計して結合する（別名 s."stock"）。ダッシュボード（src/lib/dashboard）も使う */
+export const JOIN_STOCK = Prisma.sql`
   LEFT JOIN (
     SELECT "productId", SUM("quantity") AS "stock"
     FROM "stock_movement"
