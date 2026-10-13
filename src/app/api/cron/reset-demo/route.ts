@@ -19,7 +19,7 @@ import {
 } from "../../../../../prisma/reset-demo-data";
 
 /**
- * 関数の実行時間の上限（秒）。リセットはローカルで 0.15〜0.25 秒。Neon の自動停止からの復帰（数秒）を
+ * 関数の実行時間の上限（秒）。リセットはローカルの実測で 133〜249ms。Neon の自動停止からの復帰（数秒）を
  * 見込んでも十分な値で、Vercel Hobby の上限（Fluid Compute なし 60 秒・あり 300 秒）を超えない
  */
 export const maxDuration = 60;

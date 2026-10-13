@@ -2,7 +2,7 @@
 
 StockFlow のデモを **Vercel（Hobby）＋ Neon（無料枠）** に公開する手順です。上から順に実行してください。
 
-- アプリ側の準備（`vercel.json`・`pnpm vercel-build`・日次リセットの `/api/cron/reset-demo`）はリポジトリに入っています。ここでの作業は、各サービスの画面での設定だけです
+- アプリ側の準備（`vercel.json`・`vercel-build`・日次リセットの `/api/cron/reset-demo`）はリポジトリに入っています。ここでの作業は、各サービスの画面での設定だけです
 - 画面の項目名は 2026-10 時点のものです。表記が変わっていたら、同じ意味の項目を選んでください
 - **秘密の値（接続文字列・`BETTER_AUTH_SECRET`・`CRON_SECRET`）はリポジトリ・Issue・PR・スクリーンショットに書かないでください**（最後の「秘密の値の扱い」）
 
@@ -26,7 +26,6 @@ StockFlow のデモを **Vercel（Hobby）＋ Neon（無料枠）** に公開す
 | `BETTER_AUTH_URL` | 公開 URL（例 `https://stockflow-next.vercel.app`）。末尾の `/` なし | 手順 2-3 |
 | `CRON_SECRET` | ランダムな文字列（日次リセットの認証） | `openssl rand -hex 32` |
 | `STOCKFLOW_ALLOW_DESTRUCTIVE_SEED` | `1` | 固定（デモ環境の DB のリセットを許可する） |
-| `ENABLE_EXPERIMENTAL_COREPACK` | `1` | 固定（`package.json` の `packageManager` の pnpm を使う） |
 
 `STOCKFLOW_SLACK_WEBHOOK_URL`（発注点割れの通知）は**設定しません**（未設定なら通知しない）。
 
@@ -52,11 +51,15 @@ StockFlow のデモを **Vercel（Hobby）＋ Neon（無料枠）** に公開す
 2. Branch は `main`、Database は `neondb`、Role は既定（`neondb_owner`）のまま
 3. 「**Connection pooling**」を **オン** にした状態の接続文字列 → `DATABASE_URL` に使う（ホスト名が `ep-xxxx-pooler.ap-southeast-1.aws.neon.tech` のように `-pooler` を含む）
 4. 「**Connection pooling**」を **オフ** にした状態の接続文字列 → `DIRECT_URL` に使う（ホスト名に `-pooler` がない）
-5. どちらも末尾の `sslmode=require` を **`sslmode=verify-full`** に書き換える（DB ドライバー（node-postgres）は `require` を `verify-full` として扱い、警告を出すため。意味は同じで、証明書を検証して暗号化します）。`channel_binding=require` は付いたままでかまいません（node-postgres は読みません）
+5. 末尾の `sslmode` を、使うドライバーに合わせて次のように書き換える（`channel_binding=require` は付いたままでかまいません）
+   - `DATABASE_URL`: `sslmode=require` → **`sslmode=verify-full`**
+   - `DIRECT_URL`: `sslmode=require` → **`sslmode=require&sslaccept=strict`**
+
+   > **ドライバーごとの違い:** `DATABASE_URL` はアプリ（node-postgres）が使います。node-postgres は `require` も `verify-full`（証明書とホスト名を検証）として扱いますが警告を出すので、`verify-full` と明示します。`DIRECT_URL` は Prisma CLI（`prisma migrate deploy`。node-postgres とは別の接続処理）が使います。こちらは `verify-full` を解釈せず `prefer` 扱いになり、`sslaccept` を指定しないと証明書を検証しません。そのため `require`（暗号化を必須にする）と `sslaccept=strict`（証明書を検証する）を指定します
 
 ```text
 DATABASE_URL = postgresql://neondb_owner:********@ep-xxxx-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=verify-full&channel_binding=require
-DIRECT_URL   = postgresql://neondb_owner:********@ep-xxxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=verify-full&channel_binding=require
+DIRECT_URL   = postgresql://neondb_owner:********@ep-xxxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&sslaccept=strict&channel_binding=require
 ```
 
 接続文字列にはパスワードが含まれます。控えるのはパスワードマネージャーなど、リポジトリの外にしてください。
@@ -78,11 +81,14 @@ DIRECT_URL   = postgresql://neondb_owner:********@ep-xxxx.ap-southeast-1.aws.neo
    - **Project Name:** `stockflow-next`（公開 URL が `https://<Project Name>.vercel.app` になります）
    - **Framework Preset:** Next.js（自動で選ばれます）
    - **Root Directory:** `./`
-   - **Build and Output Settings:** 変更しない。Build Command はリポジトリの `vercel.json` の `pnpm vercel-build`（`prisma migrate deploy` → `next build`）が使われます
+   - **Build and Output Settings:** 変更しない。リポジトリの `vercel.json` の次の設定が使われます
+     - Install Command: `npx -y pnpm@12.11.2 install --frozen-lockfile`
+     - Build Command: `npx -y pnpm@12.11.2 run vercel-build`（`prisma migrate deploy` → `next build`）
+     - pnpm の版を `npx` で指定しているのは、このリポジトリが pnpm 12（`package.json` の `packageManager`）を使い、Vercel が標準で対応する pnpm は 6〜10（Corepack での版の指定は実験的な機能）のためです
 
 ### 2-3. 環境変数
 
-同じ設定画面の「Environment Variables」に、上の「環境変数の一覧」の 7 つを入れる。
+同じ設定画面の「Environment Variables」に、上の「環境変数の一覧」の 6 つを入れる。
 
 - 値を作るコマンド（ローカルのターミナルで実行し、出力をそのまま貼る）
 
@@ -97,7 +103,7 @@ DIRECT_URL   = postgresql://neondb_owner:********@ep-xxxx.ap-southeast-1.aws.neo
 ### 2-4. デプロイ
 
 1. 「Deploy」を押す。ビルドのログで次の順に進むことを確認する
-   - `pnpm install`（`postinstall` で Prisma Client を生成）
+   - `pnpm install`（`npx -y pnpm@12.11.2 install …`。`postinstall` で Prisma Client を生成）
    - `prisma migrate deploy`（初回は Neon の空の DB にテーブルを作る。`All migrations have been successfully applied.`）
    - `next build`
 2. 完了したら「Continue to Dashboard」
@@ -107,32 +113,27 @@ DIRECT_URL   = postgresql://neondb_owner:********@ep-xxxx.ap-southeast-1.aws.neo
 ### 2-5. 公開 URL・リージョンの確認
 
 1. プロジェクトの「Settings」→「Domains」で、公開 URL（`xxxx.vercel.app`）を確認する。`BETTER_AUTH_URL` と違っていたら、「Environment Variables」で `BETTER_AUTH_URL` を直し、「Deployments」→ 最新のデプロイの「…」→「**Redeploy**」（環境変数の変更は、新しいデプロイから反映されます）
-2. 「Settings」→「Functions」の **Function Region** が **Singapore (sin1)** になっていることを確認する（`vercel.json` の `regions` で指定しています。Hobby でもリージョン 1 つの指定はできます）
+2. 「Settings」→「Functions」の **Function Regions** が **Singapore (sin1)** になっていることを確認する（`vercel.json` の `regions` で指定しています。Hobby でもリージョン 1 つの指定はできます）
 3. 「Settings」→「Cron Jobs」に `/api/cron/reset-demo`（`0 18 * * *`）が表示されることを確認する
 
 ### 2-6. プレビューのビルドを止める（推奨）
 
 Vercel は PR のブランチごとにプレビューをビルドします。プレビューには環境変数を入れていないので画面は動かず（マイグレーションも本番以外では実行しません）、意味がありません。
 
-- 「Settings」→「Git」→「**Ignored Build Step**」で「**Only build production**」を選ぶ（main へのマージのときだけビルドする）
+- 「Settings」→「Build and Deployment」→「**Ignored Build Step**」で「**Only build production**」を選ぶ（main へのマージのときだけビルドする）
+- ビルドを止めたプレビューも、デプロイの回数（Hobby は 1 日あたりの上限あり）には数えられます
 
 ## 3. 初回のデータ投入
 
-Neon の DB にデモデータ（シード）を入れます。**日次リセットと同じ処理（`/api/cron/reset-demo`）を 1 回呼ぶ方法を推奨します。** DB の接続文字列を手元のパソコンで扱わずに済み、日次リセットの設定（`CRON_SECRET`・`STOCKFLOW_ALLOW_DESTRUCTIVE_SEED`）の確認も兼ねられるためです。
+Neon の DB にデモデータ（シード）を入れます。**日次リセットと同じ処理（`/api/cron/reset-demo`）を curl で 1 回呼びます。** DB の接続文字列を手元のパソコンで扱わずに済み、日次リセットの設定（`CRON_SECRET`・`STOCKFLOW_ALLOW_DESTRUCTIVE_SEED`）の確認も兼ねられます。
 
-### 方法 A（推奨）: Vercel の画面から Cron を実行する
-
-1. 「Settings」→「Cron Jobs」→ `/api/cron/reset-demo` の「**Run**」を押す
-2. 「View Logs」（または「Logs」）で `デモデータをリセットしました（ep-xxxx-pooler…:5432/neondb、NNNms）` が出ていれば成功
-
-### 方法 B: curl で呼ぶ
-
-`CRON_SECRET` をコマンドの履歴に残さないよう、`read -s` で入力してから呼びます。
+宛先は**手順 2-5 で確認した自分の公開 URL** です。`CRON_SECRET` はコマンドの履歴に残さないよう `read -s` で入力し、使い終わったら `unset` で消します。
 
 ```bash
+read -r APP_URL        # 手順 2-5 で確認した公開 URL（https:// から。末尾の / なし）を貼り付けて Enter
 read -rs CRON_SECRET   # Vercel に設定した CRON_SECRET を貼り付けて Enter（画面には表示されません）
-curl -sS -H "Authorization: Bearer $CRON_SECRET" https://stockflow-next.vercel.app/api/cron/reset-demo
-unset CRON_SECRET
+curl -sS -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/reset-demo"
+unset CRON_SECRET APP_URL
 ```
 
 成功すると次のような JSON が返ります（件数は固定、`durationMs` は所要時間）。
@@ -147,7 +148,9 @@ unset CRON_SECRET
 | 500 `シードを中止しました: ローカル以外の DB …` | `STOCKFLOW_ALLOW_DESTRUCTIVE_SEED=1` が Production に入っていない。入れて Redeploy |
 | 500 `デモデータのリセットに失敗しました` | DB に接続できない・テーブルがない。Vercel の「Logs」で詳細を見る（下の「トラブル時に見るところ」） |
 
-> **ローカルからシードする方法は推奨しません。** `DIRECT_URL` と `STOCKFLOW_ALLOW_DESTRUCTIVE_SEED=1` を手元の `.env` やシェルに入れると、ほかのコマンド（`pnpm db:reset` など）まで本番の DB に向く危険があるためです。どうしても必要なときは、`.env` は変えずに 1 回のコマンドだけ `DATABASE_URL='<direct の URL>' STOCKFLOW_ALLOW_DESTRUCTIVE_SEED=1 pnpm db:seed` とし、実行後にシェルを閉じてください。
+Vercel 側から Cron を手動で実行する方法（デプロイの概要画面、Vercel CLI の `vercel crons run`）もありますが、手動実行で `CRON_SECRET` のヘッダーが付くかは公式に記載がないため、初回の投入は上の curl で行ってください。
+
+ローカルから本番の DB に直接シードする方法は使いません（本番の DB の接続情報を手元のシェルに入れないため）。
 
 ## 4. 動作確認
 
@@ -164,24 +167,24 @@ unset CRON_SECRET
 ## 5. 日次リセットの確認
 
 - 毎日 18:00 UTC（日本時間 3:00）の回に、Vercel Cron が `/api/cron/reset-demo` を呼びます。**Hobby では指定した時刻の 1 時間のうちのどこかで実行されます**（日本時間 3:00〜3:59 ごろ）
-- 翌日に次のどちらかで確認する
-  - 「Settings」→「Cron Jobs」→「View Logs」、または「Logs」でパス `/api/cron/reset-demo` を絞り込み、200 と `デモデータをリセットしました…` が出ている
-  - 前日に登録したデータ（例: テスト用の商品）が消え、件数がシード直後（商品 50 など）に戻っている
+- 翌日に**デモの画面のデータで**確認する: 前日に登録した受注（例: 備考に「リセット確認」と書いた下書き）が消え、件数がシード直後（商品 50・受注 80 など）に戻っている
+  - Hobby の実行時のログは 1 時間しか残らないので、翌日にはリセットのログを見られません（ログで確かめられるのは実行から 1 時間以内だけ）
+  - Cron は失敗しても再実行されません。リセットされていなければ、その日のうちに手順 3 の curl で 1 回呼ぶと元に戻ります
 - リセットで消えるもの: 閲覧者が登録・変更したデータ、操作履歴、**ログイン中のセッション（全員がログアウトされます）**、発行した API トークン、ログインの試行回数のカウンター。デモ用アカウント 3 つとシードデータは毎回同じ内容で作り直されます（日付はリセットした日を基準に過去約 90 日）
 
 ## 6. トラブル時に見るところ
 
 | 症状 | 見るところ・対処 |
 | --- | --- |
-| ビルドが `pnpm install` で失敗する | ビルドのログ。`ENABLE_EXPERIMENTAL_COREPACK=1` が入っているか（pnpm の版が `package.json` の `packageManager` と違うと失敗します）。それでも失敗するときは「Settings」→「Build and Deployment」の Install Command を `npx pnpm@12.11.2 install --frozen-lockfile` に変える |
+| ビルドが install で失敗する | ビルドのログ。Install Command が `vercel.json` の `npx -y pnpm@12.11.2 install --frozen-lockfile` になっているか（「Settings」→「Build and Deployment」で上書きしていないか） |
 | ビルドが `中止しました: 環境変数 DIRECT_URL が設定されていません` で止まる | `DIRECT_URL` が Production に入っているか |
-| ビルドが `prisma migrate deploy` で失敗する（`P1001` など） | `DIRECT_URL` の値（`-pooler` なしのホスト、パスワード、`sslmode`）。Neon の「Monitoring」でプロジェクトが動いているか |
+| ビルドが `prisma migrate deploy` で失敗する（`P1001` など） | `DIRECT_URL` の値（`-pooler` なしのホスト、パスワード、`sslmode=require&sslaccept=strict`）。Neon の「Monitoring」でプロジェクトが動いているか。自動停止からの復帰待ちで接続がタイムアウトする場合は、`DIRECT_URL` の末尾に `&connect_timeout=15` を足して Redeploy |
 | 画面が 500 になる | Vercel の「Logs」（関数のエラーが出ます）。`DATABASE_URL` が未設定・誤り、データ未投入（手順 3） |
 | ログインできない（「メールアドレスまたはパスワードが正しくありません」） | データ未投入（手順 3）。閲覧者が登録したユーザーは日次リセットで消えます |
 | 正しいパスワードでも「ログインできませんでした。時間をおいて…」と出る | `BETTER_AUTH_URL` と、開いている URL が違う（デプロイごとの URL `xxxx-<hash>.vercel.app` ではログインできません。公開 URL で開く）。直したら Redeploy |
 | 「試行回数が多すぎます」 | 同じ IP から 60 秒に 5 回までの制限です。1 分待つ |
 | 最初の表示が遅い | Neon の自動停止からの復帰（下の「無料枠の制限」）。2 回目からは速くなります |
-| 日次リセットが動かない | 「Settings」→「Cron Jobs」に表示されているか（Production のデプロイにだけ登録されます）、Logs の 401／500（手順 3 の表） |
+| 日次リセットが動かない | 「Settings」→「Cron Jobs」に表示されているか（Production のデプロイにだけ登録されます）。手順 3 の curl で呼んで応答（401／500 は手順 3 の表）を見る（Hobby の実行時のログは 1 時間しか残りません） |
 
 DB の中身は Neon の「Tables」で見られます（読むだけにしてください）。
 
@@ -191,9 +194,10 @@ DB の中身は Neon の「Tables」で見られます（読むだけにして�
   - 一定時間（既定 5 分）アクセスがないと DB が自動で停止し、次の接続で再開します。再開に数百ミリ秒〜数秒かかるので、しばらく使われていないデモの最初の表示は遅くなります（Free では自動停止を無効にできません）
   - ストレージと月あたりの計算時間に上限があります。デモの規模（数 MB）では通常超えませんが、上限を超えると翌月まで DB が使えなくなります。正確な値は Neon の料金ページで確認してください
 - **Vercel（Hobby）**
-  - **個人・非商用の利用に限られます。** 求人・案件の応募でポートフォリオとして見せる用途を想定しています（有償のサービスとして提供しない）
-  - Cron は **1 日 1 回まで**、実行時刻は**指定した時刻の 1 時間のうちのどこか**です（正確な時刻は保証されません）。Cron は Production のデプロイでだけ動きます
-  - 関数の実行時間には上限があります（`/api/cron/reset-demo` は `maxDuration = 60` 秒。リセットはローカルで 0.15〜0.25 秒、Neon でも数秒の想定です）
+  - **個人・非商用の利用に限られます**（[Fair Use Guidelines](https://vercel.com/docs/limits/fair-use-guidelines#commercial-usage)）。求人・案件の応募用のポートフォリオが非商用に当たるかは公式に明記がありません。デモの中に料金・営業・問い合わせの導線や広告は置かず、迷ったら Vercel に確認してください
+  - Cron は **1 日 1 回まで**、実行時刻は**指定した時刻の 1 時間のうちのどこか**です（正確な時刻は保証されません）。Cron は Production のデプロイでだけ動き、失敗しても再実行されません
+  - 実行時のログは 1 時間しか残りません
+  - 関数の実行時間には上限があります（`/api/cron/reset-demo` は `maxDuration = 60` 秒。リセットはローカルの実測で 133〜249ms、Neon でも数秒の想定です）
   - 帯域・関数の実行回数などに月の上限があります。デモの利用では通常超えません
 
 ## 8. 秘密の値の扱い
@@ -209,7 +213,7 @@ DB の中身は Neon の「Tables」で見られます（読むだけにして�
 
 | ファイル | 内容 |
 | --- | --- |
-| `vercel.json` | Build Command（`pnpm vercel-build`）、Functions のリージョン（`sin1`）、Cron（`/api/cron/reset-demo` を `0 18 * * *`） |
+| `vercel.json` | Install Command・Build Command（`npx -y pnpm@12.11.2 …`。`vercel-build`）、Functions のリージョン（`sin1`）、Cron（`/api/cron/reset-demo` を `0 18 * * *`） |
 | `scripts/vercel-migrate.ts` | `vercel-build` の前半。本番（`VERCEL_ENV=production`）でだけ `prisma migrate deploy` を実行（`DIRECT_URL` 必須）。プレビュー・ローカルでは何もしない |
 | `prisma.config.ts` | Prisma CLI の接続先。`DIRECT_URL` があればそちら、なければ `DATABASE_URL` |
 | `src/app/api/cron/reset-demo/route.ts` | 日次リセット。`Authorization: Bearer <CRON_SECRET>` を定数時間で比較し、違えば 401 |

@@ -557,13 +557,13 @@ SCREENSHOT_BASE_URL=http://127.0.0.1:3100 pnpm screenshots # 別のポートで�
 
 Vercel（Hobby）＋ Neon（無料枠）に公開します。手順（アカウント作成・環境変数・初回のデータ投入・動作確認・無料枠の制限）は [docs/deploy.md](docs/deploy.md) にまとめています。
 
-- **ビルド:** Vercel は `pnpm vercel-build`（`vercel.json`）を実行します。本番（`VERCEL_ENV=production`）でだけ `prisma migrate deploy` を直接接続の `DIRECT_URL` で実行してから `next build` します（`scripts/vercel-migrate.ts`）。PR のプレビューのビルドではマイグレーションしません。ローカルの `pnpm build` は DB なしで通ります
+- **ビルド:** Vercel は `vercel.json` の設定で、pnpm 12（`npx -y pnpm@12.11.2`。Vercel の標準の対応は pnpm 10 まで）でインストールし、`vercel-build` を実行します。本番（`VERCEL_ENV=production`）でだけ `prisma migrate deploy` を直接接続の `DIRECT_URL` で実行してから `next build` します（`scripts/vercel-migrate.ts`）。PR のプレビューのビルドではマイグレーションしません。ローカルの `pnpm build` は DB なしで通ります
 - **DB の接続:** アプリは `DATABASE_URL`（Neon の接続プール経由の URL）、Prisma CLI（マイグレーション）は `DIRECT_URL` があればそちらを使います（`prisma.config.ts`）。ローカル・CI は `DIRECT_URL` を空にして `DATABASE_URL` だけで動きます。`DIRECT_URL` を設定した場合も、`pnpm db:reset`・`pnpm db:test:reset` は接続先を確認してから実行します
 - **デモデータの日次リセット:** Vercel Cron（`vercel.json`。毎日 18:00 UTC ＝ 日本時間 3 時台。Hobby では実行時刻はその 1 時間のどこか）が `GET /api/cron/reset-demo` を呼び、`pnpm db:seed` と同じ処理（`prisma/reset-demo-data.ts`）でアプリのテーブルを空にしてシードを投入し直します
   - 認証は `Authorization: Bearer <CRON_SECRET>`（Vercel Cron の仕様）。定数時間で比較し、違う・`CRON_SECRET` 未設定なら 401
   - ローカル以外の DB は `STOCKFLOW_ALLOW_DESTRUCTIVE_SEED=1` がないとシードと同じガード（`scripts/db-guard.ts`）で中止します（500。データには触れない）
   - セッション・API トークン・ログインの試行回数のカウンターも消えます（全員がログアウトされる）。公開デモでは前日の閲覧者のログイン状態・トークンを残さない方がよいので、そのままにしています
-  - 所要時間はローカルの PostgreSQL で 0.15〜0.25 秒です。関数の上限は `maxDuration = 60` 秒にしています
+  - 所要時間はローカルの PostgreSQL の実測で 133〜249ms です。関数の上限は `maxDuration = 60` 秒にしています
 - **リージョン:** Functions は `sin1`（シンガポール。`vercel.json` の `regions`）、Neon は AWS Asia Pacific (Singapore)
 - **本番の設定:** `BETTER_AUTH_URL` を公開 URL（`https://…`）にすると、セッションの Cookie は `__Secure-` 付きの Secure になります。ログインの試行回数制限の IP は Vercel が上書きする `x-forwarded-for` から取ります。`/api-docs` の CSP は通信先が同じオリジンだけなので、公開 URL でもそのまま動きます。発注点割れの通知（`STOCKFLOW_SLACK_WEBHOOK_URL`）は設定しません
 
@@ -631,7 +631,7 @@ flowchart LR
   issue["GitHub Issue<br/>（やること・仕様の節）"] --> branch["ブランチ<br/>feat/番号-名前"]
   branch --> impl["Claude Code が実装<br/>テストも同時に書く"]
   impl --> pr["PR<br/>概要・設計判断・確認したこと"]
-  pr --> review["レビュー 2 本<br/>Claude・Codex"]
+  pr --> review["独立したレビュー 2 本<br/>原則 Claude・Codex"]
   review -->|指摘に対応| impl
   review --> ci["CI<br/>lint・型・テスト・ビルド・E2E"]
   ci --> merge["main にマージ"]
@@ -641,6 +641,6 @@ flowchart LR
 2. **ブランチ:** `feat/<issue番号>-<短い名前>`。main へ直接 push しません
 3. **実装:** Claude Code が Issue と仕様を読んで実装し、単体・結合（・必要なら E2E）テストを書いて、手元で `pnpm lint`・`pnpm typecheck`・`pnpm test`・`pnpm build` を通します
 4. **PR:** 概要・変更内容・設計判断・確認したことを書いて作成します
-5. **レビュー 2 本:** Claude と Codex（OpenAI）の 2 つのモデルで独立にレビューし、指摘ごとに直すか・理由を書いて見送るかを判断します
+5. **レビュー 2 本:** PR ごとに独立したレビューを 2 本行います（原則 Claude と Codex（OpenAI）。Codex が利用上限のときは Claude による独立した 2 本目、小さな修正ではメインループ（作業を指揮する Claude）によるコードの直接確認で代えます）。指摘ごとに直すか・理由を書いて見送るかを判断します
 6. **CI:** GitHub Actions（lint・型チェック・単体＋結合テスト・ビルド、E2E）がすべて緑であることを確認します
 7. **マージ:** main にマージし、Issue を閉じます
