@@ -11,6 +11,7 @@ import { revalidatePath } from "next/cache";
 import { checkActionPermission } from "@/lib/auth/guards";
 import { getPrisma } from "@/lib/db";
 import { formatNumber, formatSignedNumber } from "@/lib/format";
+import { notifyReorderPointAfterResponse } from "@/lib/notifications/reorder-point";
 import { adjustStock, type StockMutationError } from "@/lib/stock/service";
 
 /** 棚卸調整（admin／staff）。成功したら結果のメッセージを返す（画面は再描画される） */
@@ -27,7 +28,7 @@ export async function adjustStockAction(
   }
   const result = await adjustStock(getPrisma(), check.user, productId, input);
   if (!result.ok) return result;
-  const { recorded, before, after, delta } = result.data;
+  const { recorded, before, after, delta, fellBelowReorderPoint } = result.data;
   if (!recorded) {
     return {
       ok: true,
@@ -35,6 +36,12 @@ export async function adjustStockAction(
       message: `実数が現在庫（${formatNumber(before)}）と同じため、記録しませんでした`,
     };
   }
+  // トランザクション確定後。発注点割れに変わったら、応答を返した後に通知する（#12）
+  notifyReorderPointAfterResponse({
+    crossings: fellBelowReorderPoint,
+    trigger: { kind: "stock_adjust", productId },
+    userId: check.user.id,
+  });
   // 在庫一覧・入出庫履歴・商品の一覧と詳細（現在庫を表示している）を最新にする
   revalidatePath("/stock", "layout");
   revalidatePath("/products", "layout");
