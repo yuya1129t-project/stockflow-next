@@ -194,6 +194,9 @@ export async function updatePartner(
   const data = parsed.data;
   try {
     return await db.$transaction(async (tx): Promise<PartnerMutationResult> => {
+      // 受注・発注の作成（src/lib/orders/locks.ts）は取引先の行を FOR SHARE でロックしてから種別を検査する。
+      // ここで先に行をロックしてから受注・発注を数えるので、作成と種別の変更が同時に走っても矛盾しない
+      await tx.$queryRaw`SELECT "id" FROM "partner" WHERE "id" = ${id} FOR NO KEY UPDATE`;
       const before = await tx.partner.findUnique({ where: { id } });
       if (!before) return NOT_FOUND;
       const changes = describePartnerChanges(pickInput(before), data);

@@ -34,10 +34,21 @@ export const metadata: Metadata = { title: "入出庫履歴 | StockFlow" };
 
 const REF_LABELS = { sales_order: "受注", purchase_order: "発注" } as const;
 
-/** 参照元の伝票（受注・発注の画面ができるまではテキストで表示する） */
-function refText(ref: StockMovementListItem["ref"]): string {
-  if (!ref) return "—";
-  return `${REF_LABELS[ref.type]} ${ref.number ?? `#${ref.id}`}`;
+/** 参照元の伝票。発注は詳細へのリンク（受注は画面ができるまでテキストで表示する） */
+function RefCell({ target }: { target: StockMovementListItem["ref"] }) {
+  if (!target) return "—";
+  const text = `${REF_LABELS[target.type]} ${target.number ?? `#${target.id}`}`;
+  if (target.type === "purchase_order" && target.number !== null) {
+    return (
+      <Link
+        href={`/purchase-orders/${target.id}`}
+        className="underline-offset-4 hover:underline"
+      >
+        {text}
+      </Link>
+    );
+  }
+  return text;
 }
 
 function pageHref(productId: number, page: number): string {
@@ -168,7 +179,7 @@ export default async function StockDetailPage({
                       {m.reason ?? "—"}
                     </TableCell>
                     <TableCell className="hidden font-mono md:table-cell">
-                      {refText(m.ref)}
+                      <RefCell target={m.ref} />
                     </TableCell>
                     <TableCell className="hidden md:table-cell">
                       {m.userName ?? "—"}

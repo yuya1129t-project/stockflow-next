@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { requirePermission } from "@/lib/auth/guards";
+import { purchaseOrderPath } from "@/lib/dashboard/paths";
 import type { MonthOverMonth } from "@/lib/dashboard/period";
 import {
   getDashboardData,
@@ -87,15 +88,17 @@ function ChangeText({ change }: { change: MonthOverMonth }) {
   );
 }
 
-/** 伝票の一覧（番号はテキスト。詳細画面ができたら src/lib/dashboard/paths.ts のパスでリンクにする） */
+/** 伝票の一覧（hrefOf があれば番号を詳細へのリンクにする。受注は詳細画面ができるまでテキスト） */
 function OrderList({
   items,
   dateLabel,
   overdueLabel,
+  hrefOf,
 }: {
   items: DashboardOrderItem[];
   dateLabel: string;
   overdueLabel: string;
+  hrefOf?: (id: number) => string;
 }) {
   return (
     <ul className="divide-y text-sm">
@@ -105,7 +108,16 @@ function OrderList({
           className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 py-1.5"
         >
           <span className="min-w-0">
-            <span className="font-mono">{o.number}</span>
+            {hrefOf ? (
+              <Link
+                href={hrefOf(o.id)}
+                className="font-mono underline-offset-4 hover:underline"
+              >
+                {o.number}
+              </Link>
+            ) : (
+              <span className="font-mono">{o.number}</span>
+            )}
             <span className="ml-2 text-muted-foreground">{o.partnerName}</span>
           </span>
           <span
@@ -297,6 +309,7 @@ export default async function Home() {
               items={awaitingReceipt.items}
               dateLabel="予定"
               overdueLabel="予定日超過"
+              hrefOf={purchaseOrderPath}
             />
           )}
         </Card>

@@ -80,6 +80,14 @@ export async function withStockTransaction<T>(
   );
 }
 
+/**
+ * tx が withStockTransaction の実行中の tx か（在庫を記録するトランザクションか）。
+ * 在庫の記録と併用できない処理（src/lib/orders/locks.ts の lockProductsForLines）が、併用を拒否するのに使う
+ */
+export function isStockTransaction(tx: object): boolean {
+  return activeStockTransactions.has(tx);
+}
+
 /** withStockTransaction の実行中の tx でなければ例外（型を外して呼ばれた場合の実行時の確認） */
 function assertStockTransaction(tx: StockTransaction): void {
   if (!activeStockTransactions.has(tx)) {
