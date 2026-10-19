@@ -23,7 +23,7 @@ StockFlow のデモを **Vercel（Hobby）＋ Neon（無料枠）** に公開す
 | `DATABASE_URL` | Neon の**プール接続**（ホスト名に `-pooler` が付く）の URL | 手順 1-3 |
 | `DIRECT_URL` | Neon の**直接接続**（`-pooler` なし）の URL。マイグレーション用 | 手順 1-3 |
 | `BETTER_AUTH_SECRET` | ランダムな 32 バイト以上の文字列 | `openssl rand -base64 32` |
-| `BETTER_AUTH_URL` | 公開 URL（例 `https://stockflow-next.vercel.app`）。末尾の `/` なし | 手順 2-3 |
+| `BETTER_AUTH_URL` | 公開 URL（例 `https://<Project Name>.vercel.app`）。末尾の `/` なし | 手順 2-3 |
 | `CRON_SECRET` | ランダムな文字列（日次リセットの認証） | `openssl rand -hex 32` |
 | `STOCKFLOW_ALLOW_DESTRUCTIVE_SEED` | `1` | 固定（デモ環境の DB のリセットを許可する） |
 
@@ -97,7 +97,7 @@ DIRECT_URL   = postgresql://neondb_owner:********@ep-xxxx.ap-southeast-1.aws.neo
   openssl rand -hex 32      # CRON_SECRET
   ```
 
-- `BETTER_AUTH_URL` は `https://<Project Name>.vercel.app`（例 `https://stockflow-next.vercel.app`）。名前が使われていて別の URL になった場合は、手順 2-5 で直します
+- `BETTER_AUTH_URL` は `https://<Project Name>.vercel.app`（例 `https://<Project Name>.vercel.app`）。名前が使われていて別の URL になった場合は、手順 2-5 で直します
 - インポート画面で入れた環境変数は全環境（Production・Preview・Development）に入ることがあります。デプロイ後に「Settings」→「Environment Variables」で、**すべて Production だけ**になっているか確認し、Preview・Development の分は外してください（プレビュー（PR のブランチ）から本番の DB に接続させないため）
 
 ### 2-4. デプロイ
@@ -154,7 +154,7 @@ Vercel 側から Cron を手動で実行する方法（デプロイの概要画�
 
 ## 4. 動作確認
 
-公開 URL（`https://stockflow-next.vercel.app` など）を開いて確認します。デモ用アカウントは README の「デモ」の節（パスワードはすべて `demo-pass-1234`）。
+公開 URL（手順 2-5 で確認したもの）を開いて確認します。デモ用アカウントは README の「デモ」の節（パスワードはすべて `demo-pass-1234`）。
 
 - [ ] ログイン画面が表示される（初回や 5 分以上アクセスがなかった後は、Neon の復帰で数秒かかることがあります）
 - [ ] **admin** でログインできる。ダッシュボードに数値とグラフが出る。メニューに「ユーザー管理」「操作履歴」がある
